@@ -24,6 +24,11 @@ android {
     }
 
     buildTypes {
+        // debug 也使用正式密钥签名：否则 Studio 的调试包无法覆盖安装正式版，
+        // 会报 "install-create" 失败 / INSTALL_FAILED_UPDATE_INCOMPATIBLE
+        debug {
+            signingConfig = signingConfigs.getByName("release")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
