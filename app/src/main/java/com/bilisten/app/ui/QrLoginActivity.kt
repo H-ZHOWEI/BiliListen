@@ -1,10 +1,18 @@
 package com.bilisten.app.ui
 
+import android.Manifest
+import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.view.View
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.bilisten.app.R
 import com.bilisten.app.data.BiliAppDetect
@@ -13,8 +21,10 @@ import com.bilisten.app.data.Prefs
 import com.bilisten.app.data.QrLogin
 import com.bilisten.app.databinding.ActivityQrLoginBinding
 import com.bilisten.app.util.QrCode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 扫码快捷登录页。
@@ -25,6 +35,15 @@ class QrLoginActivity : AppCompatActivity() {
     private lateinit var binding: ActivityQrLoginBinding
     private var pollJob: Job? = null
     private var currentKey: String? = null
+    private var qrBitmap: Bitmap? = null
+    private var expired = false
+
+    private val writePerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) saveAndOpenBili() else {
+            Toast.makeText(this, R.string.qr_save_failed, Toast.LENGTH_LONG).show()
+            openBiliHome()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,7 +52,7 @@ class QrLoginActivity : AppCompatActivity() {
 
         binding.btnBack.setOnClickListener { finish() }
         binding.btnMaskRefresh.setOnClickListener { loadQr() }
-        binding.btnOpenBili.setOnClickListener { openBiliScanner() }
+        binding.btnOpenBili.setOnClickListener { onSaveAndOpenClick() }
         binding.btnAltLogin.setOnClickListener {
             startActivity(Intent(this, WebLoginActivity::class.java))
             finish()
@@ -72,6 +91,7 @@ class QrLoginActivity : AppCompatActivity() {
                 setState(getString(R.string.qr_net_error), R.color.bili_pink, false)
                 return@launch
             }
+            qrBitmap = bmp
             binding.ivQr.setImageBitmap(bmp)
             setState(getString(R.string.qr_waiting), R.color.bili_blue, true)
             startPolling(ticket.key)
@@ -102,6 +122,7 @@ class QrLoginActivity : AppCompatActivity() {
             }
 
             QrLogin.State.EXPIRED -> {
+                expired = true
                 setState(getString(R.string.qr_expired), R.color.on_bg_dim, false)
                 showMask(getString(R.string.qr_expired))
             }
@@ -154,18 +175,86 @@ class QrLoginActivity : AppCompatActivity() {
         binding.layQrMask.visibility = View.VISIBLE
     }
 
-    // ---------------- 唤起哔哩哔哩 ----------------
+    // ---------------- 保存二维码 + 打开哔哩哔哩 ----------------
 
-    private fun openBiliScanner() {
-        val intent = BiliAppDetect.scanIntent(this)
+    /**
+     * 同一部手机上没法「用 B 站扫自己屏幕」，所以改成：
+     * 把二维码存进相册 → 打开哔哩哔哩 → 扫一扫右上角「相册」选中它 → 确认登录。
+     */
+    private fun onSaveAndOpenClick() {
+        if (qrBitmap == null) {
+            Toast.makeText(this, R.string.qr_loading, Toast.LENGTH_SHORT).show()
+            loadQr()
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            val granted = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                writePerm.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                return
+            }
+        }
+        saveAndOpenBili()
+    }
+
+    private fun saveAndOpenBili() {
+        val bmp = qrBitmap ?: return
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) { saveToGallery(bmp) }
+            Toast.makeText(
+                this@QrLoginActivity,
+                if (ok) R.string.qr_saved else R.string.qr_save_failed,
+                Toast.LENGTH_LONG
+            ).show()
+            openBiliHome()
+        }
+    }
+
+    private fun saveToGallery(bmp: Bitmap): Boolean = try {
+        val name = "bilisten_login_${System.currentTimeMillis()}.png"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/哔哩听")
+            }
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: return false
+            contentResolver.openOutputStream(uri)?.use { out ->
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+            } != null
+        } else {
+            @Suppress("DEPRECATION")
+            MediaStore.Images.Media.insertImage(
+                contentResolver, bmp, name, "哔哩听登录二维码"
+            ) != null
+        }
+    } catch (e: Exception) {
+        false
+    }
+
+    /** 打开哔哩哔哩（深链失效时退回普通启动），用户自己点「扫一扫 → 相册」 */
+    private fun openBiliHome() {
+        val intent = BiliAppDetect.openApp(this)
         if (intent == null) {
-            Toast.makeText(this, R.string.qr_no_bili_app, Toast.LENGTH_LONG).show()
+            Toast.makeText(this, R.string.qr_open_failed, Toast.LENGTH_LONG).show()
             return
         }
         try {
             startActivity(intent)
         } catch (e: Exception) {
-            Toast.makeText(this, R.string.qr_no_bili_app, Toast.LENGTH_LONG).show()
+            Toast.makeText(this, R.string.qr_open_failed, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 从哔哩哔哩切回来时，若二维码已过期就自动换一张，省得用户再点
+        if (expired) {
+            expired = false
+            loadQr()
         }
     }
 

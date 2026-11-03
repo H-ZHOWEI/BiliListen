@@ -16,7 +16,7 @@ object QrCode {
             val hints = mapOf(
                 EncodeHintType.CHARACTER_SET to "UTF-8",
                 EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
-                EncodeHintType.MARGIN to 1
+                EncodeHintType.MARGIN to 3
             )
             val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
             val w = matrix.width

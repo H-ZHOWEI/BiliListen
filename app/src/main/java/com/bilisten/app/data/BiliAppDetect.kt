@@ -46,6 +46,18 @@ object BiliAppDetect {
     fun isInstalled(context: Context): Boolean = installedPackage(context) != null
 
     /**
+     * 打开哔哩哔哩 App（普通启动，最稳）。
+     * 新版 B 站已不再响应 bilibili://qrscan 之类的扫一扫深链，
+     * 所以登录流程改为「二维码存相册 → 用户自己点扫一扫 → 相册选图」。
+     */
+    fun openApp(context: Context): Intent? {
+        val pkg = installedPackage(context) ?: return null
+        return context.packageManager.getLaunchIntentForPackage(pkg)?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    /**
      * 优先用 deeplink 直接打开扫一扫；不支持时退化为「打开 B 站首页」。
      * 未安装返回 null。
      */

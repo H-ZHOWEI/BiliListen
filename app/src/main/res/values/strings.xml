@@ -25,7 +25,7 @@
     <!-- 快捷登录 -->
     <string name="quick_login">快捷登录</string>
     <string name="quick_login_badge">推荐</string>
-    <string name="quick_desc_installed">已检测到本机哔哩哔哩，点一下授权，在 B 站里确认即可免密登录。</string>
+    <string name="quick_desc_installed">已检测到本机哔哩哔哩。点一下会生成登录二维码，在 B 站「扫一扫 → 相册」里选它即可免密登录。</string>
     <string name="quick_desc_not_installed">未检测到哔哩哔哩 App，可用另一台手机扫码登录。</string>
     <string name="quick_btn">一键快捷登录</string>
     <string name="quick_btn_qr">扫码登录</string>
@@ -45,7 +45,10 @@
     <string name="qr_cookie_invalid">授权成功但登录态校验失败，请重试</string>
     <string name="qr_welcome">欢迎回来，%1$s</string>
     <string name="qr_no_bili_app">这台手机没有安装哔哩哔哩，用另一台手机扫一扫也可以</string>
-    <string name="qr_tip">1. 打开哔哩哔哩，点右上角「扫一扫」\n2. 扫描上方二维码\n3. 在手机上点「确认登录」</string>
-    <string name="qr_open_bili">打开哔哩哔哩扫一扫</string>
+    <string name="qr_tip">1. 点下方按钮，二维码会存进相册并自动打开哔哩哔哩\n2. 在哔哩哔哩里点右上角「扫一扫」，再点右上角「相册」\n3. 选中刚才保存的二维码，点「确认登录」\n4. 回到哔哩听，自动完成登录</string>
+    <string name="qr_open_bili">保存二维码并打开哔哩哔哩</string>
+    <string name="qr_saved">二维码已存到相册，请在哔哩哔哩「扫一扫 → 相册」里选它</string>
+    <string name="qr_save_failed">保存失败，请截图后用哔哩哔哩扫一扫的「相册」导入</string>
+    <string name="qr_open_failed">没打开哔哩哔哩，请手动打开后从相册选二维码</string>
     <string name="qr_footer">免密码登录。授权只在本机完成，Cookie 仅保存在这台设备上。</string>
 </resources>
