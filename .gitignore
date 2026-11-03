@@ -1,0 +1,13 @@
+*.iml
+.gradle
+/local.properties
+.idea
+build
+/app/build
+captures
+.cxx
+.kotlin
+
+# 签名密钥含密码，绝不上传（请自行另行备份）
+*.jks
+*.keystore

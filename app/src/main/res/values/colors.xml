@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bili_pink">#FB7299</color>
+    <color name="bili_pink_dark">#C9567A</color>
+    <color name="bili_blue">#23ADE5</color>
+    <color name="bili_accent">#4FC08D</color>
+
+    <color name="bg">#0E0C11</color>
+    <color name="surface">#17151C</color>
+    <color name="surface_high">#221F29</color>
+    <color name="surface_higher">#2C2833</color>
+    <color name="on_bg">#F4F0F7</color>
+    <color name="on_bg_dim">#A69FB2</color>
+    <color name="divider">#2A2630</color>
+    <color name="scrim">#99000000</color>
+</resources>

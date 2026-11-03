@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">哔哩听</string>
+    <string name="login_title">登录哔哩哔哩</string>
+    <string name="login_sub">登录后可读取你的收藏夹，把收藏的视频当音乐听</string>
+    <string name="login_btn">使用哔哩哔哩账号登录</string>
+    <string name="cookie_login">粘贴 Cookie 登录</string>
+    <string name="folders_title">我的收藏夹</string>
+    <string name="tracks_title">收藏夹</string>
+    <string name="play_all">播放全部</string>
+    <string name="shuffle_all">随机播放</string>
+    <string name="empty_folders">还没有收藏夹</string>
+    <string name="empty_tracks">这个收藏夹里还没有视频</string>
+    <string name="retry">重试</string>
+    <string name="logout">退出登录</string>
+    <string name="no_lyric">暂无歌词</string>
+    <string name="search_lyric">搜索歌词</string>
+    <string name="mini_play">播放</string>
+    <string name="loading">加载中…</string>
+    <string name="close">关闭</string>
+    <string name="demo_listen">先听听看（无需登录）</string>
+    <string name="download">下载</string>
+    <string name="downloaded_songs">已下载</string>
+
+    <!-- 快捷登录 -->
+    <string name="quick_login">快捷登录</string>
+    <string name="quick_login_badge">推荐</string>
+    <string name="quick_desc_installed">已检测到本机哔哩哔哩，点一下授权，在 B 站里确认即可免密登录。</string>
+    <string name="quick_desc_not_installed">未检测到哔哩哔哩 App，可用另一台手机扫码登录。</string>
+    <string name="quick_btn">一键快捷登录</string>
+    <string name="quick_btn_qr">扫码登录</string>
+    <string name="quick_other">其他登录方式</string>
+
+    <!-- 扫码页 -->
+    <string name="qr_title">扫码快捷登录</string>
+    <string name="qr_loading">正在生成二维码…</string>
+    <string name="qr_waiting">等待扫码…</string>
+    <string name="qr_scanned">已扫码，请在手机上确认登录</string>
+    <string name="qr_success">授权成功，正在登录…</string>
+    <string name="qr_expired">二维码已过期</string>
+    <string name="qr_refresh">点击刷新</string>
+    <string name="qr_retry_hint">加载失败，点击刷新重试</string>
+    <string name="qr_net_error">网络不太好，二维码没生成出来</string>
+    <string name="qr_fail">登录未完成</string>
+    <string name="qr_cookie_invalid">授权成功但登录态校验失败，请重试</string>
+    <string name="qr_welcome">欢迎回来，%1$s</string>
+    <string name="qr_no_bili_app">这台手机没有安装哔哩哔哩，用另一台手机扫一扫也可以</string>
+    <string name="qr_tip">1. 打开哔哩哔哩，点右上角「扫一扫」\n2. 扫描上方二维码\n3. 在手机上点「确认登录」</string>
+    <string name="qr_open_bili">打开哔哩哔哩扫一扫</string>
+    <string name="qr_footer">免密码登录。授权只在本机完成，Cookie 仅保存在这台设备上。</string>
+</resources>
