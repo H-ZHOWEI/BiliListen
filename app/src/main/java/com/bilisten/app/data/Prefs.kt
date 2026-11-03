@@ -44,6 +44,16 @@ object Prefs {
         get() = sp.getBoolean("lyric_bili_only", false)
         set(value) = sp.edit().putBoolean("lyric_bili_only", value).apply()
 
+    /** 上次检查更新的时间戳，用于控制自动检查频率 */
+    var updateCheckedAt: Long
+        get() = sp.getLong("update_checked_at", 0L)
+        set(value) = sp.edit().putLong("update_checked_at", value).apply()
+
+    /** 用户点了「跳过此版本」的版本号，同一版本不再自动提醒 */
+    var skippedVersion: String
+        get() = sp.getString("skipped_version", "").orEmpty()
+        set(value) = sp.edit().putString("skipped_version", value).apply()
+
     val isLogin: Boolean get() = cookie.contains("SESSDATA=") && mid > 0L
 
     fun clearLogin() {

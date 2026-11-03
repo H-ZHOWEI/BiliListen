@@ -17,6 +17,13 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/action_update"
+        android:icon="@drawable/ic_refresh"
+        android:title="检查更新"
+        app:iconTint="@color/on_bg"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/action_logout"
         android:icon="@drawable/ic_logout"
         android:title="@string/logout"

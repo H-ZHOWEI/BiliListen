@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.View
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -18,7 +20,9 @@ import com.bilisten.app.data.BiliRepository
 import com.bilisten.app.data.FavFolder
 import com.bilisten.app.data.Prefs
 import com.bilisten.app.data.Track
+import com.bilisten.app.data.Updater
 import com.bilisten.app.databinding.ActivityMainBinding
+import com.bilisten.app.databinding.DialogUpdateBinding
 import com.bilisten.app.player.PlayerController
 import kotlinx.coroutines.launch
 
@@ -55,6 +59,10 @@ class MainActivity : AppCompatActivity() {
                         .commit()
                     true
                 }
+                R.id.action_update -> {
+                    checkUpdate(manual = true)
+                    true
+                }
                 R.id.action_logout -> {
                     confirmLogout()
                     true
@@ -64,6 +72,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         setupMiniPlayer()
+
+        // 启动时静默检查更新（12 小时最多一次，用户点过「跳过此版本」的不再打扰）
+        checkUpdate(manual = false)
 
         if (savedInstanceState == null) {
             supportFragmentManager.beginTransaction()
@@ -160,6 +171,116 @@ class MainActivity : AppCompatActivity() {
     /** 供 Fragment 触发刷新 */
     interface Reloadable {
         fun reload()
+    }
+
+    // ---------------- 应用内更新 ----------------
+
+    private var updateDialogShowing = false
+
+    /**
+     * @param manual true=用户点「检查更新」，无论有无新版本都给反馈；
+     *               false=启动自动检查，静默失败、12 小时内只查一次、跳过此版本则不弹
+     */
+    private fun checkUpdate(manual: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!manual) {
+            if (now - Prefs.updateCheckedAt < 12 * 3600_000L) return
+        }
+        Prefs.updateCheckedAt = now
+        lifecycleScope.launch {
+            val info = Updater.checkUpdate(this@MainActivity)
+            if (info == null) {
+                if (manual) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "已是最新版本 v${Updater.currentVersion(this@MainActivity)}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                return@launch
+            }
+            if (!manual && Prefs.skippedVersion == info.version) return@launch
+            showUpdateDialog(info)
+        }
+    }
+
+    private fun showUpdateDialog(info: Updater.Info) {
+        if (updateDialogShowing || isFinishing) return
+        val v = DialogUpdateBinding.inflate(layoutInflater)
+        v.tvUpdateVersion.text =
+            "新版本 v${info.version}（当前 v${Updater.currentVersion(this)}）"
+        v.tvUpdateNotes.text = info.notes.ifBlank { "修复已知问题，优化使用体验。" }
+
+        var downloading = false
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("发现新版本")
+            .setView(v.root)
+            .setPositiveButton("立即更新", null)
+            .setNegativeButton("以后再说", null)
+            .setNeutralButton("跳过此版本", null)
+            .create()
+
+        dialog.setOnShowListener {
+            val btnUpdate = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                Prefs.skippedVersion = info.version
+                Toast.makeText(this, "已跳过 v${info.version}，下次版本发布再提醒", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+            btnUpdate.setOnClickListener {
+                if (downloading) return@setOnClickListener
+                // Android 8+ 需要用户单独允许「安装未知应用」
+                if (!Updater.canInstall(this)) {
+                    Toast.makeText(
+                        this,
+                        "请在本页打开「允许安装未知应用」，返回后再点一次「立即更新」",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    Updater.openInstallPermission(this)
+                    return@setOnClickListener
+                }
+                downloading = true
+                btnUpdate.isEnabled = false
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = false
+                v.updateProgress.visibility = View.VISIBLE
+                v.tvUpdateStatus.visibility = View.VISIBLE
+                v.tvUpdateStatus.text = "正在下载…"
+                btnUpdate.text = "下载中"
+
+                lifecycleScope.launch {
+                    val progressJob = launch {
+                        Updater.progress.collect { p ->
+                            if (p >= 0f) {
+                                v.updateProgress.progress = (p * 100).toInt()
+                                v.tvUpdateStatus.text = "正在下载 ${(p * 100).toInt()}%"
+                            }
+                        }
+                    }
+                    val file = Updater.download(this@MainActivity, info)
+                    progressJob.cancel()
+                    if (file == null) {
+                        downloading = false
+                        btnUpdate.isEnabled = true
+                        btnUpdate.text = "重试"
+                        v.updateProgress.visibility = View.GONE
+                        v.tvUpdateStatus.text = "下载失败，请检查网络后重试"
+                        return@launch
+                    }
+                    v.tvUpdateStatus.text = "下载完成，正在打开安装程序…"
+                    if (!Updater.install(this@MainActivity, file)) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "无法打开安装程序，请手动到 GitHub 下载：${Updater.PAGE_URL}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    dialog.dismiss()
+                }
+            }
+        }
+        dialog.setOnDismissListener { updateDialogShowing = false }
+        updateDialogShowing = true
+        dialog.show()
     }
 
     override fun onResume() {
