@@ -3,6 +3,7 @@ package com.bilisten.app.ui
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.View
@@ -212,6 +213,7 @@ class MainActivity : AppCompatActivity() {
         v.tvUpdateNotes.text = info.notes.ifBlank { "修复已知问题，优化使用体验。" }
 
         var downloading = false
+        var failed = false
         val dialog = AlertDialog.Builder(this)
             .setTitle("发现新版本")
             .setView(v.root)
@@ -222,13 +224,27 @@ class MainActivity : AppCompatActivity() {
 
         dialog.setOnShowListener {
             val btnUpdate = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            val btnNeutral = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+            btnNeutral.setOnClickListener {
+                if (failed) {
+                    // 失败状态下：这个按钮变成「重试」
+                    failed = false
+                    btnUpdate.text = "立即更新"
+                    btnNeutral.text = "跳过此版本"
+                    btnUpdate.performClick()
+                    return@setOnClickListener
+                }
                 Prefs.skippedVersion = info.version
                 Toast.makeText(this, "已跳过 v${info.version}，下次版本发布再提醒", Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
             btnUpdate.setOnClickListener {
                 if (downloading) return@setOnClickListener
+                if (failed) {
+                    // 失败状态下：这个按钮变成「用浏览器下载」
+                    openBrowser(Updater.PAGE_URL)
+                    return@setOnClickListener
+                }
                 // Android 8+ 需要用户单独允许「安装未知应用」
                 if (!Updater.canInstall(this)) {
                     Toast.makeText(
@@ -240,8 +256,9 @@ class MainActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
                 downloading = true
+                failed = false
                 btnUpdate.isEnabled = false
-                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = false
+                btnNeutral.isEnabled = false
                 v.updateProgress.visibility = View.VISIBLE
                 v.tvUpdateStatus.visibility = View.VISIBLE
                 v.tvUpdateStatus.text = "正在下载…"
@@ -260,10 +277,13 @@ class MainActivity : AppCompatActivity() {
                     progressJob.cancel()
                     if (file == null) {
                         downloading = false
+                        failed = true
                         btnUpdate.isEnabled = true
-                        btnUpdate.text = "重试"
+                        btnNeutral.isEnabled = true
+                        btnUpdate.text = "浏览器下载"
+                        btnNeutral.text = "重试"
                         v.updateProgress.visibility = View.GONE
-                        v.tvUpdateStatus.text = "下载失败，请检查网络后重试"
+                        v.tvUpdateStatus.text = "下载失败：CDN 连接超时/被拦截，点「浏览器下载」手动安装"
                         return@launch
                     }
                     v.tvUpdateStatus.text = "下载完成，正在打开安装程序…"
@@ -281,6 +301,15 @@ class MainActivity : AppCompatActivity() {
         dialog.setOnDismissListener { updateDialogShowing = false }
         updateDialogShowing = true
         dialog.show()
+    }
+
+    /** 用系统浏览器打开指定网址（下载兜底 / 手动安装用） */
+    private fun openBrowser(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: Exception) {
+            Toast.makeText(this, "无法打开浏览器：$url", Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onResume() {

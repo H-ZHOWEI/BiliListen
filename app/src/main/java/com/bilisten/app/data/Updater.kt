@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
 
 /**
  * 应用内更新：从 GitHub Releases 拿最新版本号，与本地版本比对，需要更新时下载 APK 并拉起系统安装器。
@@ -104,8 +106,47 @@ object Updater {
     }
 
     /**
+     * 更新专用的独立 OkHttp 客户端：加长超时 + 跟随重定向。
+     * 默认 [Net.http] 读超时仅 30s，8.8MB 的 APK 在弱网/跨境 CDN 上很容易超时；
+     * 这里把读超时放宽到 120s，并允许连接失败自动重试。
+     */
+    private val updateClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val b = req.newBuilder()
+                if (req.header("User-Agent") == null) {
+                    b.header("User-Agent", "BiliListen-Updater")
+                }
+                chain.proceed(b.build())
+            }
+            .build()
+    }
+
+    /**
+     * 生成下载地址候选列表：原始地址排在首位，后面是若干国内可直连的 GitHub 镜像加速，
+     * 用于绕过 release-assets.githubusercontent.com 在部分网络下被墙/限速的问题。
+     */
+    private fun candidateUrls(original: String): List<String> {
+        val t = original.trim()
+        return listOf(
+            t,
+            "https://ghproxy.net/$t",
+            "https://mirror.ghproxy.com/$t",
+            "https://gh.api.99988866.xyz/$t"
+        ).distinct()
+    }
+
+    /**
      * 下载安装包到缓存目录，返回本地文件。进度见 [progress]。
      * 已有同版本文件且大小一致时直接复用，避免重复下载。
+     * 下载会依次尝试原始地址与各镜像加速，每个地址最多重试 2 次，任一成功即返回。
      */
     suspend fun download(context: Context, info: Info): File? = withContext(Dispatchers.IO) {
         try {
@@ -117,15 +158,40 @@ object Updater {
                 return@withContext target
             }
 
-            val req = okhttp3.Request.Builder().url(info.apkUrl)
-                .header("User-Agent", "BiliListen-Updater")
-                .build()
-            val resp = Net.http.newCall(req).execute()
-            if (!resp.isSuccessful) {
-                _progress.value = -1f
-                return@withContext null
+            val urls = candidateUrls(info.apkUrl)
+            var lastErr: Exception? = null
+            for (url in urls) {
+                repeat(2) {
+                    try {
+                        if (doDownload(url, target, info.sizeBytes)) {
+                            _progress.value = 1f
+                            return@withContext target
+                        }
+                    } catch (e: Exception) {
+                        lastErr = e
+                    }
+                }
             }
-            val total = resp.body?.contentLength()?.takeIf { it > 0 } ?: info.sizeBytes
+            lastErr?.printStackTrace()
+            _progress.value = -1f
+            null
+        } catch (e: Exception) {
+            _progress.value = -1f
+            null
+        }
+    }
+
+    /** 单个地址下载；成功返回 true，失败（含校验不通过）返回 false 并清理半截文件 */
+    private fun doDownload(url: String, target: File, expectedSize: Long): Boolean {
+        val req = okhttp3.Request.Builder().url(url).get().build()
+        val resp = updateClient.newCall(req).execute()
+        if (!resp.isSuccessful) {
+            try { resp.body?.close() } catch (_: Exception) { }
+            return false
+        }
+        val total = resp.body?.contentLength()?.takeIf { it > 0 } ?: expectedSize
+        var ok = false
+        try {
             resp.body?.byteStream()?.use { input ->
                 target.outputStream().use { out ->
                     val buf = ByteArray(64 * 1024)
@@ -136,19 +202,17 @@ object Updater {
                         done += read
                         if (total > 0) _progress.value = (done.toFloat() / total).coerceIn(0f, 1f)
                     }
+                    out.flush()
                 }
             }
-            if (target.length() < 1024) {
-                target.delete()
-                _progress.value = -1f
-                return@withContext null
-            }
-            _progress.value = 1f
-            target
+            ok = target.length() >= 1024L &&
+                (expectedSize <= 0L || target.length() == expectedSize)
         } catch (e: Exception) {
-            _progress.value = -1f
-            null
+            ok = false
+        } finally {
+            if (!ok) try { target.delete() } catch (_: Exception) { }
         }
+        return ok
     }
 
     /** 是否已授予「允许安装未知应用」权限（Android 8+） */
