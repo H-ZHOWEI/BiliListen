@@ -11,8 +11,10 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.TextView
 import com.bilisten.app.R
-import com.bilisten.app.player.LyricBroadcaster
+import com.bilisten.app.data.Prefs
+import com.bilisten.app.player.LyricEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,7 +25,9 @@ import kotlinx.coroutines.launch
 /**
  * 歌词置顶悬浮窗：独立于播放页，常驻在最上层显示当前正在唱的那句歌词。
  * 通过 SYSTEM_ALERT_WINDOW 把一个小药丸挂在屏幕上，可拖动；没有歌词时自动隐藏。
- * 数据来自 LyricBroadcaster（和通知栏 / 车机走的是同一路）。
+ *
+ * 数据来自 LyricEngine（进程级常驻推进）——App 退后台 / 播放页关闭后歌词照样走，
+ * 单行显示当前句；双行模式第一行当前句、第二行下一句（⋮ 菜单里切换）。
  */
 class LyricOverlayService : Service() {
 
@@ -43,7 +47,8 @@ class LyricOverlayService : Service() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         this.wm = wm
         val v = LayoutInflater.from(this).inflate(R.layout.overlay_lyric, null)
-        val text = v.findViewById<android.widget.TextView>(R.id.lyric_text)
+        val text = v.findViewById<TextView>(R.id.lyric_text)
+        val textNext = v.findViewById<TextView>(R.id.lyric_text_next)
 
         params = WindowManager.LayoutParams().apply {
             width = WindowManager.LayoutParams.WRAP_CONTENT
@@ -86,13 +91,30 @@ class LyricOverlayService : Service() {
         wm.addView(v, params)
         view = v
 
+        // 双行模式在每次刷新时实时读偏好，用户切换单/双行即刻生效
         scope.launch {
-            LyricBroadcaster.line.collectLatest { line ->
-                if (line.isBlank()) {
+            LyricEngine.currentLine.collectLatest { line ->
+                val dual = Prefs.lyricOverlayDual
+                text.text = line
+                text.maxLines = if (dual) 1 else 2
+                if (line.isBlank() && (!dual || LyricEngine.nextLine.value.isBlank())) {
                     v.visibility = View.GONE
                 } else {
-                    text.text = line
                     v.visibility = View.VISIBLE
+                }
+            }
+        }
+        scope.launch {
+            LyricEngine.nextLine.collectLatest { next ->
+                val dual = Prefs.lyricOverlayDual
+                if (dual && next.isNotBlank()) {
+                    textNext.text = "↓ $next"
+                    textNext.visibility = View.VISIBLE
+                    if (LyricEngine.currentLine.value.isNotBlank()) {
+                        v.visibility = View.VISIBLE
+                    }
+                } else {
+                    textNext.visibility = View.GONE
                 }
             }
         }

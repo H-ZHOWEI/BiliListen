@@ -44,12 +44,28 @@ object LyricsRepository {
             synchronized(cache) { cache[key] }?.let { return@withContext it }
 
             val segments = LyricStore.getSegments(track.bvid)
-            fun finalize(r: LyricResult): LyricResult =
-                if (segments.isEmpty()) r
-                else LyricResult(
-                    LyricStore.applySegments(r.lines, segments),
-                    r.source, r.keyword
-                )
+            val calibOffset = LyricStore.getCalibOffset(track.bvid)
+            val calibRate = LyricStore.getCalibRate(track.bvid)
+            val hasCalib = calibOffset != 0L || Math.abs(calibRate - 1.0) > 0.0001
+
+            /** 依次应用：整体校准（偏移+速度倍率）→ 分段校准（局部平移） */
+            fun finalize(r: LyricResult): LyricResult {
+                var lines = r.lines
+                if (hasCalib) {
+                    lines = lines
+                        .map {
+                            LyricLine(
+                                ((it.timeMs * calibRate).toLong() + calibOffset).coerceAtLeast(0),
+                                it.text
+                            )
+                        }
+                        .sortedBy { it.timeMs }
+                }
+                if (segments.isNotEmpty()) {
+                    lines = LyricStore.applySegments(lines, segments)
+                }
+                return if (lines === r.lines) r else LyricResult(lines, r.source, r.keyword)
+            }
 
             // 0. 用户手打歌词（最高优先级，持久保存）
             if (forceKeyword.isNullOrBlank()) {

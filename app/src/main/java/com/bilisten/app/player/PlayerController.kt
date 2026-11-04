@@ -33,6 +33,9 @@ object PlayerController {
 
     private val trackMap = LinkedHashMap<String, Track>()
 
+    /** 队列内唯一 key：bvid@cid（支持同一个视频的不同分 P 共存） */
+    private fun keyOf(track: Track) = "${track.bvid}@${track.cid}"
+
     var controller: MediaController? = null
         private set
 
@@ -66,6 +69,9 @@ object PlayerController {
                 connected.value = true
                 syncAll()
                 startTicker()
+                // 歌词引擎：进程级常驻，App 退后台也持续推进行（悬浮窗/车机依赖）
+                LyricEngine.start()
+                LyricEngine.onTrackChanged(current.value)
             } catch (e: Exception) {
                 future = null
                 errorText.value = "播放服务连接失败：${e.message}"
@@ -76,6 +82,8 @@ object PlayerController {
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             current.value = mediaItem?.mediaId?.let { trackMap[it] }
+            // 歌词引擎跟着切歌（同 bvid 换分P/换画面时不重载）
+            LyricEngine.onTrackChanged(current.value)
             // 切到别的歌就退出视频模式，回到纯音频
             if (mediaItem?.mediaId != videoBvid) {
                 videoBvid = ""
@@ -217,7 +225,7 @@ object PlayerController {
         failedBvids.clear()
         skipJob?.cancel()
         trackMap.clear()
-        tracks.forEach { trackMap[it.bvid] = it }
+        tracks.forEach { trackMap[keyOf(it)] = it }
         queue.value = tracks
         val items = tracks.map { it.toMediaItem() }
         val index = startIndex.coerceIn(0, items.size - 1)
@@ -296,11 +304,11 @@ object PlayerController {
     fun setVideoMode(on: Boolean) {
         val c = controller ?: return
         val track = current.value ?: return
-        if (on == videoMode.value && videoBvid == track.bvid) return
+        if (on == videoMode.value && videoBvid == keyOf(track)) return
 
         val pos = if (c.playbackState == Player.STATE_READY) c.currentPosition else 0L
         val idx = c.currentMediaItemIndex
-        videoBvid = if (on) track.bvid else ""
+        videoBvid = if (on) keyOf(track) else ""
         videoMode.value = on
         try {
             c.replaceMediaItems(idx, idx + 1, listOf(track.toMediaItem(on)))
@@ -359,14 +367,34 @@ object PlayerController {
             .apply { if (cover.isNotBlank()) setArtworkUri(Uri.parse(cover)) }
             .build()
 
-        // 已下载的歌直接用本地文件，离线也能放（视频画面模式始终走在线整段 mp4）
-        val local = if (video) null else Downloads.localUri(bvid)
+        // 已下载的歌直接用本地文件，离线也能放（分P须一致；视频画面模式始终走在线整段 mp4）
+        val local = if (video) null else Downloads.localUri(bvid, cid)
         val uri = local ?: Uri.parse(if (video) "bilivideo://$bvid/$cid" else "biliaudio://$bvid/$cid")
 
         return MediaItem.Builder()
-            .setMediaId(bvid)
+            .setMediaId("${bvid}@$cid")
             .setUri(uri)
             .setMediaMetadata(metadata)
             .build()
+    }
+
+    /**
+     * 把当前正在播的歌换成另一个 Track（同视频换分P等场景）：
+     * 原地替换 MediaItem、保留进度由调用方决定；这里从 0 开始播新的分P。
+     */
+    fun replaceCurrentTrack(newTrack: Track) {
+        val c = controller ?: return
+        val idx = c.currentMediaItemIndex
+        trackMap[keyOf(newTrack)] = newTrack
+        queue.value = queue.value.mapIndexed { i, t -> if (i == idx) newTrack else t }
+        try {
+            c.replaceMediaItems(idx, idx + 1, listOf(newTrack.toMediaItem(false)))
+            c.seekTo(idx, 0L)
+            c.prepare()
+            c.play()
+            current.value = newTrack
+        } catch (e: Exception) {
+            errorText.value = "切换分P失败：${e.message}"
+        }
     }
 }

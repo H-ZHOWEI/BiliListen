@@ -79,7 +79,7 @@ object BiliRepository {
         parse<FavPage>(Net.get(url))?.data ?: FavPage()
     }
 
-    /** 拉取整个收藏夹（自动翻页） */
+    /** 拉取整个收藏夹（自动翻页），并应用用户保存的「只保留某个分P」选择 */
     suspend fun fetchAllTracks(mediaId: Long, onProgress: (Int) -> Unit = {}): List<Track> =
         withContext(Dispatchers.IO) {
             val result = ArrayList<Track>()
@@ -88,7 +88,7 @@ object BiliRepository {
                 val data = fetchFavPage(mediaId, page)
                 val medias = data.medias.orEmpty()
                 for (m in medias) {
-                    toTrack(m)?.let { result.add(it) }
+                    toTrack(m)?.let { result.add(PageStore.apply(it)) }
                 }
                 onProgress(result.size)
                 if (!data.hasMore || medias.isEmpty()) break
@@ -207,6 +207,16 @@ object BiliRepository {
 
     suspend fun fetchFirstCid(bvid: String): Long = withContext(Dispatchers.IO) {
         fetchFirstCidBlocking(bvid)
+    }
+
+    /** 列出视频所有分P（多P视频让用户「只保留某个分P」用） */
+    suspend fun fetchPages(bvid: String): List<VideoPage> = withContext(Dispatchers.IO) {
+        try {
+            parse<PageListData>(Net.get("$PAGELIST?bvid=$bvid"))?.data?.pages.orEmpty()
+                .filter { it.cid > 0L }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     fun fetchFirstCidBlocking(bvid: String): Long = try {

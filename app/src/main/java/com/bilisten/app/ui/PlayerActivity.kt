@@ -4,15 +4,20 @@ import android.content.Intent
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
-import androidx.activity.result.contract.ActivityResultContracts
 import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
@@ -23,31 +28,33 @@ import coil.load
 import com.bilisten.app.R
 import com.bilisten.app.data.BiliRepository
 import com.bilisten.app.data.Downloads
-import com.bilisten.app.data.LyricLine
 import com.bilisten.app.data.LyricStore
-import com.bilisten.app.data.LyricsRepository
+import com.bilisten.app.data.PageStore
+import com.bilisten.app.data.PlaylistStore
 import com.bilisten.app.data.Prefs
 import com.bilisten.app.data.Track
 import com.bilisten.app.databinding.ActivityPlayerBinding
-import com.bilisten.app.player.LyricBroadcaster
+import com.bilisten.app.player.LyricEngine
 import com.bilisten.app.player.PlayerController
 import com.bilisten.app.util.Fmt
+import com.bilisten.app.util.TitleParser
 import com.google.android.material.slider.Slider
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 class PlayerActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityPlayerBinding
     private lateinit var lyricAdapter: LyricAdapter
 
-    private var lyricLines: List<LyricLine> = emptyList()
-    private var currentLyricIndex = -1
     private var userSeeking = false
     private var loadedBvid = ""
     private var currentTrack: Track? = null
+
+    private val screenHandler = Handler(Looper.getMainLooper())
 
     private val overlayPermLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -156,6 +163,51 @@ class PlayerActivity : AppCompatActivity() {
                 launch {
                     PlayerController.videoMode.collect { on -> applyVideoMode(on) }
                 }
+
+                // 歌词：全部来自进程级常驻的 LyricEngine（App 退后台也持续推进）
+                launch {
+                    LyricEngine.lines.collect { lyricAdapter.submitList(it) }
+                }
+                launch {
+                    LyricEngine.currentIndex.collect { idx ->
+                        lyricAdapter.setCurrent(idx)
+                        if (idx >= 0) {
+                            val lm = binding.rvLyrics.layoutManager as LinearLayoutManager
+                            val offset = binding.rvLyrics.height / 2 - 40
+                            lm.scrollToPositionWithOffset(idx, offset.coerceAtLeast(0))
+                        }
+                    }
+                }
+                launch {
+                    LyricEngine.currentLine.collect { line ->
+                        if (binding.tvVideoCaption.visibility == View.VISIBLE) {
+                            binding.tvVideoCaption.text = line
+                        }
+                    }
+                }
+                launch {
+                    LyricEngine.events.collect { snap ->
+                        if (snap.bvid != loadedBvid) return@collect
+                        if (snap.empty) {
+                            binding.lyricEmpty.visibility = View.VISIBLE
+                            binding.tvLyricTip.text =
+                                if (Prefs.lyricBiliOnly) "这个视频没有 B 站字幕" else "没找到匹配的歌词，已为你显示视频画面"
+                            binding.btnSearchLyric.visibility = View.VISIBLE
+                            binding.btnLyric.text = "歌词"
+                            // 宁可没有歌词也不显示错的：直接放视频画面
+                            PlayerController.setVideoMode(true)
+                        } else {
+                            binding.lyricEmpty.visibility = View.GONE
+                            PlayerController.setVideoMode(false)
+                            binding.btnLyric.text = when {
+                                snap.source.startsWith("B站") -> "歌词·B站字幕"
+                                snap.source.startsWith("LRCLIB") -> "歌词·LRCLIB"
+                                snap.source == "我的歌词" -> "歌词·我的"
+                                else -> "歌词"
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -198,6 +250,47 @@ class PlayerActivity : AppCompatActivity() {
     /** 回到播放页时，若之前开着悬浮窗且权限仍在，则重新挂上 */
     private fun syncOverlay() {
         if (Prefs.lyricOverlayOn && hasOverlayPerm()) startLyricOverlay()
+    }
+
+    // ---------------- 屏幕常亮 ----------------
+
+    /**
+     * 歌曲详情页（歌词页）屏幕常亮：
+     * 0=一直亮（默认） 1=5分钟 2=10分钟 3=30分钟 4=跟随系统。
+     * FLAG_KEEP_SCREEN_ON 只在本页面窗口可见时生效，离开页面自动恢复系统息屏。
+     */
+    private fun applyScreenKeepOn() {
+        screenHandler.removeCallbacksAndMessages(null)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        when (Prefs.screenOn) {
+            0 -> window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            1, 2, 3 -> {
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                val minutes = when (Prefs.screenOn) {
+                    1 -> 5L
+                    2 -> 10L
+                    else -> 30L
+                }
+                screenHandler.postDelayed({
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }, minutes * 60_000L)
+            }
+            // 4 = 跟随系统，不加 flag
+        }
+    }
+
+    private fun showScreenOnDialog() {
+        val labels = arrayOf("一直常亮（默认）", "5 分钟后息屏", "10 分钟后息屏", "30 分钟后息屏", "跟随系统")
+        AlertDialog.Builder(this)
+            .setTitle("歌曲详情页屏幕常亮")
+            .setSingleChoiceItems(labels, Prefs.screenOn) { dialog, which ->
+                Prefs.screenOn = which
+                applyScreenKeepOn()
+                dialog.dismiss()
+                Toast.makeText(this, "已设置：${labels[which]}", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun onTrackChanged(track: Track?) {
@@ -250,42 +343,6 @@ class PlayerActivity : AppCompatActivity() {
             binding.tvPosition.text = Fmt.duration(pos)
             binding.tvDuration.text = Fmt.duration(total)
         }
-        updateLyricHighlight(pos)
-    }
-
-    private fun updateLyricHighlight(pos: Long) {
-        if (lyricLines.isEmpty()) {
-            LyricBroadcaster.update("")
-            return
-        }
-        var lo = 0
-        var hi = lyricLines.size - 1
-        var found = -1
-        while (lo <= hi) {
-            val mid = (lo + hi) / 2
-            if (lyricLines[mid].timeMs <= pos + 150) {
-                found = mid
-                lo = mid + 1
-            } else {
-                hi = mid - 1
-            }
-        }
-        if (found != currentLyricIndex) {
-            currentLyricIndex = found
-            lyricAdapter.setCurrent(found)
-            if (found >= 0) {
-                val lm = binding.rvLyrics.layoutManager as LinearLayoutManager
-                val offset = binding.rvLyrics.height / 2 - 40
-                lm.scrollToPositionWithOffset(found, offset.coerceAtLeast(0))
-            }
-        }
-        val currentText = if (found >= 0) lyricLines[found].text else ""
-        // 同步给后台服务 → 媒体通知，车机/Android Auto 显示当前这句
-        LyricBroadcaster.update(currentText)
-        // 视频画面模式下，画面底部只保留当前这一行字幕
-        if (binding.tvVideoCaption.visibility == View.VISIBLE) {
-            binding.tvVideoCaption.text = currentText
-        }
     }
 
     /** 视频画面模式：封面换成播放画面，底部一行字幕 */
@@ -294,7 +351,7 @@ class PlayerActivity : AppCompatActivity() {
             binding.ivCover.visibility = View.GONE
             binding.surfaceVideo.visibility = View.VISIBLE
             binding.tvVideoCaption.visibility =
-                if (lyricLines.isEmpty()) View.GONE else View.VISIBLE
+                if (LyricEngine.lines.value.isEmpty()) View.GONE else View.VISIBLE
             try {
                 PlayerController.controller?.setVideoSurfaceView(binding.surfaceVideo)
             } catch (e: Exception) {
@@ -312,39 +369,11 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun loadLyrics(track: Track, keyword: String?) {
-        lyricLines = emptyList()
-        currentLyricIndex = -1
-        lyricAdapter.submitList(emptyList())
         binding.lyricEmpty.visibility = View.VISIBLE
         binding.tvLyricTip.text = "正在找歌词…"
         binding.btnSearchLyric.visibility = View.GONE
         binding.btnLyric.text = "歌词"
-
-        lifecycleScope.launch {
-            val result = LyricsRepository.load(track, keyword)
-            if (loadedBvid != track.bvid) return@launch
-            lyricLines = result.lines
-            currentLyricIndex = -1
-            lyricAdapter.submitList(result.lines)
-            if (result.isEmpty) {
-                binding.lyricEmpty.visibility = View.VISIBLE
-                binding.tvLyricTip.text =
-                    if (Prefs.lyricBiliOnly) "这个视频没有 B 站字幕" else "没找到匹配的歌词，已为你显示视频画面"
-                binding.btnSearchLyric.visibility = View.VISIBLE
-                binding.btnLyric.text = "歌词"
-                // 宁可没有歌词也不显示错的：直接放视频画面
-                PlayerController.setVideoMode(true)
-            } else {
-                binding.lyricEmpty.visibility = View.GONE
-                PlayerController.setVideoMode(false)
-                binding.btnLyric.text = when {
-                    result.source.startsWith("B站") -> "歌词·B站字幕"
-                    result.source.startsWith("LRCLIB") -> "歌词·LRCLIB"
-                    result.source == "我的歌词" -> "歌词·我的"
-                    else -> "歌词"
-                }
-            }
-        }
+        LyricEngine.load(track, keyword)
     }
 
     private fun showLyricSearchDialog() {
@@ -416,20 +445,26 @@ class PlayerActivity : AppCompatActivity() {
             isChecked = PlayerController.videoMode.value
         }
         popup.menu.add(0, 6, 5, "校准歌词（从这里开始）")
-        popup.menu.add(0, 7, 6, "手打歌词")
+        popup.menu.add(0, 12, 6, "歌词整体微调（偏移 + 速度）")
+        popup.menu.add(0, 7, 7, "手打歌词")
         if (LyricStore.getCustomLrc(track.bvid).isNullOrBlank().not()) {
-            popup.menu.add(0, 8, 7, "清除我的歌词")
+            popup.menu.add(0, 8, 8, "清除我的歌词")
         }
-        if (LyricStore.getSegments(track.bvid).isNotEmpty()) {
-            popup.menu.add(0, 9, 8, "重置歌词校准")
+        if (LyricStore.getSegments(track.bvid).isNotEmpty() || LyricStore.hasCalibration(track.bvid)) {
+            popup.menu.add(0, 9, 9, "重置全部歌词校准")
         }
-        popup.menu.add(0, 10, 9, "歌词悬浮窗（置顶显示）").apply {
+        popup.menu.add(0, 10, 10, "歌词悬浮窗（置顶显示）").apply {
             isCheckable = true
             isChecked = Prefs.lyricOverlayOn
         }
-        popup.menu.add(0, 11, 10, "字幕 / 语音转文字").apply {
-            isCheckable = false
+        popup.menu.add(0, 16, 11, "悬浮歌词双行（当前句+下一句）").apply {
+            isCheckable = true
+            isChecked = Prefs.lyricOverlayDual
         }
+        popup.menu.add(0, 11, 12, "字幕 / 语音转文字")
+        popup.menu.add(0, 13, 13, "选择分P（只保留某个分P）")
+        popup.menu.add(0, 14, 14, "加入我的歌单")
+        popup.menu.add(0, 15, 15, "屏幕常亮设置")
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> {
@@ -497,16 +532,15 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 8 -> {
                     LyricStore.clearCustomLrc(track.bvid)
-                    LyricsRepository.invalidate(track.bvid)
+                    LyricEngine.load(track, null)
                     Toast.makeText(this, "已清除我的歌词", Toast.LENGTH_SHORT).show()
-                    loadLyrics(track, null)
                     true
                 }
                 9 -> {
                     LyricStore.clearSegments(track.bvid)
-                    LyricsRepository.invalidate(track.bvid)
-                    Toast.makeText(this, "已重置校准，恢复原始时间轴", Toast.LENGTH_SHORT).show()
-                    loadLyrics(track, null)
+                    LyricStore.setCalibration(track.bvid, 0L, 1.0)
+                    LyricEngine.load(track, null)
+                    Toast.makeText(this, "已重置全部校准，恢复原始时间轴", Toast.LENGTH_SHORT).show()
                     true
                 }
                 10 -> {
@@ -515,6 +549,31 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 11 -> {
                     showSubtitlePicker(track)
+                    true
+                }
+                12 -> {
+                    showFineTuneDialog(track)
+                    true
+                }
+                13 -> {
+                    showPagePicker(track)
+                    true
+                }
+                14 -> {
+                    showPlaylistPicker(track)
+                    true
+                }
+                15 -> {
+                    showScreenOnDialog()
+                    true
+                }
+                16 -> {
+                    Prefs.lyricOverlayDual = !Prefs.lyricOverlayDual
+                    Toast.makeText(
+                        this,
+                        if (Prefs.lyricOverlayDual) "悬浮歌词：双行显示" else "悬浮歌词：单行显示",
+                        Toast.LENGTH_SHORT
+                    ).show()
                     true
                 }
                 else -> false
@@ -526,6 +585,12 @@ class PlayerActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         syncOverlay()
+        applyScreenKeepOn()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        screenHandler.removeCallbacksAndMessages(null)
     }
 
     override fun onDestroy() {
@@ -549,13 +614,77 @@ class PlayerActivity : AppCompatActivity() {
             .setTitle("从 ${Fmt.duration(pos)} 开始校准")
             .setMessage(
                 "歌词显示比演唱慢就选「提前」，快了就选「延后」。\n" +
-                    "只影响这首歌后面的部分，可多次叠加，永久保存。"
+                    "只影响这首歌后面的部分，可多次叠加，永久保存。\n" +
+                    "「歌词整体微调」可以修「越到后面偏差越大」的速度问题。"
             )
             .setItems(options) { _, which ->
                 LyricStore.addSegment(track.bvid, pos, offsets[which])
-                LyricsRepository.invalidate(track.bvid)
+                LyricEngine.load(track, null)
                 Toast.makeText(this, "已校准，即刻生效", Toast.LENGTH_SHORT).show()
-                loadLyrics(track, null)
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /**
+     * 歌词整体微调：两个滑杆精确调整 ——
+     * 偏移（±5 秒，步长 0.05 秒）+ 速度倍率（±10%，步长 0.1%），
+     * 修「越到后面歌词偏得越多」的速度类偏差。立即生效，永久保存。
+     */
+    private fun showFineTuneDialog(track: Track) {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(64, 40, 64, 8)
+        }
+        val tvOffset = TextView(this).apply { textSize = 13f }
+        val sliderOffset = Slider(this).apply {
+            valueFrom = -5000f
+            valueTo = 5000f
+            stepSize = 50f
+            value = (LyricStore.getCalibOffset(track.bvid) / 50L * 50L)
+                .toFloat().coerceIn(-5000f, 5000f)
+        }
+        val tvRate = TextView(this).apply { textSize = 13f }
+        val sliderRate = Slider(this).apply {
+            valueFrom = -100f
+            valueTo = 100f
+            stepSize = 1f
+            value = ((LyricStore.getCalibRate(track.bvid) - 1.0) * 1000.0)
+                .roundToInt().coerceIn(-100, 100).toFloat()
+        }
+
+        fun refreshLabels() {
+            val off = sliderOffset.value.toLong()
+            val rate = 1.0 + sliderRate.value / 1000.0
+            val offText = if (off == 0L) "0 秒" else String.format("%+.2f 秒", off / 1000.0)
+            tvOffset.text = "整体偏移：$offText（正=歌词延后显示，负=提前）"
+            tvRate.text = String.format("速度倍率：%.3f（越到后面越慢就调大于 1）", rate)
+        }
+        refreshLabels()
+        sliderOffset.addOnChangeListener { _, _, _ -> refreshLabels() }
+        sliderRate.addOnChangeListener { _, _, _ -> refreshLabels() }
+
+        container.addView(tvOffset)
+        container.addView(sliderOffset)
+        container.addView(tvRate)
+        container.addView(sliderRate)
+
+        AlertDialog.Builder(this)
+            .setTitle("歌词整体微调")
+            .setView(container)
+            .setPositiveButton("应用") { _, _ ->
+                LyricStore.setCalibration(
+                    track.bvid,
+                    sliderOffset.value.toLong(),
+                    1.0 + sliderRate.value / 1000.0
+                )
+                LyricEngine.load(track, null)
+                Toast.makeText(this, "已应用整体微调，即刻生效", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("重置") { _, _ ->
+                LyricStore.setCalibration(track.bvid, 0L, 1.0)
+                LyricEngine.load(track, null)
+                Toast.makeText(this, "已重置整体微调", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("取消", null)
             .show()
@@ -586,9 +715,8 @@ class PlayerActivity : AppCompatActivity() {
                     Toast.makeText(this, "内容为空，未保存", Toast.LENGTH_SHORT).show()
                 } else {
                     LyricStore.setCustomLrc(track.bvid, text, "我的歌词")
-                    LyricsRepository.invalidate(track.bvid)
+                    LyricEngine.load(track, null)
                     Toast.makeText(this, "已保存我的歌词", Toast.LENGTH_SHORT).show()
-                    loadLyrics(track, null)
                 }
             }
             .setNegativeButton("取消", null)
@@ -631,18 +759,131 @@ class PlayerActivity : AppCompatActivity() {
                         d.dismiss()
                         val lan = lans[which]
                         LyricStore.setChosenSubtitle(track.bvid, lan)
-                        LyricsRepository.invalidate(track.bvid)
+                        LyricEngine.load(track, null)
                         Toast.makeText(
                             this@PlayerActivity,
                             if (lan == null) "已恢复自动选择字幕" else "已指定字幕来源，重新加载中…",
                             Toast.LENGTH_SHORT
                         ).show()
-                        loadLyrics(track, null)
                     }
                     .setNegativeButton("取消", null)
                     .show()
             }
         }
+    }
+
+    /**
+     * 多P视频「只保留某个分P」：列出所有分P，选定后立即切换播放，
+     * 并持久保存 —— 收藏夹列表里的这首歌从此只显示/播放选中的分P。
+     */
+    private fun showPagePicker(track: Track) {
+        lifecycleScope.launch {
+            val pages = try {
+                BiliRepository.fetchPages(track.bvid)
+            } catch (_: Exception) {
+                emptyList()
+            }
+            withContext(Dispatchers.Main) {
+                if (pages.size <= 1) {
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        "这个视频只有一个分P（或分P信息读取失败）",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@withContext
+                }
+                val labels = pages.map { p ->
+                    val name = p.part?.takeIf { it.isNotBlank() } ?: "分P"
+                    "P${p.page} $name · ${Fmt.duration(p.duration * 1000L)}"
+                }
+                val saved = PageStore.get(track.bvid)
+                var checked = pages.indexOfFirst { it.cid == (saved?.cid ?: track.cid) }
+                if (checked < 0) checked = 0
+                AlertDialog.Builder(this@PlayerActivity)
+                    .setTitle("选择分P（只保留选中的这个）")
+                    .setSingleChoiceItems(labels.toTypedArray(), checked) { d, which ->
+                        d.dismiss()
+                        val p = pages[which]
+                        PageStore.save(
+                            track.bvid,
+                            PageStore.PageChoice(
+                                page = p.page,
+                                cid = p.cid,
+                                part = p.part.orEmpty(),
+                                durationMs = p.duration * 1000L
+                            )
+                        )
+                        val part = p.part?.takeIf { it.isNotBlank() }.orEmpty()
+                        val newTrack = track.copy(
+                            cid = p.cid,
+                            durationMs = p.duration * 1000L,
+                            title = ("${TitleParser.clean(track.rawTitle)} · P${p.page} $part").take(120)
+                        )
+                        PlayerController.replaceCurrentTrack(newTrack)
+                        Toast.makeText(
+                            this@PlayerActivity,
+                            "已切换到 P${p.page}，收藏夹里这首歌也会只保留这个分P",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+        }
+    }
+
+    /**
+     * 加入我的歌单：本地歌单不影响 B 站收藏夹数据。
+     * 勾选/取消多个歌单一次保存；也可现场新建歌单。
+     */
+    private fun showPlaylistPicker(track: Track) {
+        val playlists = PlaylistStore.all()
+        val inLists = PlaylistStore.playlistsOf(track)
+        val checked = BooleanArray(playlists.size) { inLists.contains(playlists[it].id) }
+        val labels = playlists.map { "${it.name}（${it.tracks.size} 首）" }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("加入我的歌单（仅本地，不影响B站）")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("保存") { _, _ ->
+                var added = 0
+                playlists.forEachIndexed { i, p ->
+                    val wasIn = inLists.contains(p.id)
+                    if (checked[i] && !wasIn && PlaylistStore.add(p.id, track)) added++
+                    if (!checked[i] && wasIn) PlaylistStore.remove(p.id, track)
+                }
+                Toast.makeText(
+                    this,
+                    if (added > 0) "已加入 $added 个歌单" else "歌单已更新",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .setNeutralButton("新建歌单并加入") { _, _ ->
+                val input = EditText(this).apply {
+                    hint = "歌单名称"
+                    inputType = InputType.TYPE_CLASS_TEXT
+                    setPadding(56, 36, 56, 36)
+                }
+                AlertDialog.Builder(this)
+                    .setTitle("新建歌单")
+                    .setView(input)
+                    .setPositiveButton("创建") { _, _ ->
+                        val name = input.text.toString().trim()
+                        if (name.isEmpty()) {
+                            Toast.makeText(this, "名称为空，未创建", Toast.LENGTH_SHORT).show()
+                        } else {
+                            val p = PlaylistStore.create(name)
+                            PlaylistStore.add(p.id, track)
+                            Toast.makeText(this, "已创建「${p.name}」并加入这首歌", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun fractionToMs(fraction: Float): Long {

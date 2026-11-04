@@ -60,6 +60,13 @@ class MainActivity : AppCompatActivity() {
                         .commit()
                     true
                 }
+                R.id.action_playlists -> {
+                    supportFragmentManager.beginTransaction()
+                        .replace(R.id.container, PlaylistsFragment())
+                        .addToBackStack("playlists")
+                        .commit()
+                    true
+                }
                 R.id.action_update -> {
                     checkUpdate(manual = true)
                     true
@@ -145,6 +152,13 @@ class MainActivity : AppCompatActivity() {
                 TrackFragment.newInstance(folder.id, folder.title, folder.mediaCount)
             )
             .addToBackStack("tracks")
+            .commit()
+    }
+
+    fun openPlaylistDetail(id: String, name: String) {
+        supportFragmentManager.beginTransaction()
+            .replace(R.id.container, PlaylistDetailFragment.newInstance(id, name))
+            .addToBackStack("playlist_detail")
             .commit()
     }
 

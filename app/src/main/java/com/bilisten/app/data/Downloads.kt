@@ -90,13 +90,18 @@ object Downloads {
 
     fun stateOf(bvid: String): DlState? = _states.value[bvid]
 
-    fun localFile(bvid: String): File? {
+    /**
+     * 查本地文件。cid 非零时要求下载记录的分P一致 ——
+     * 多P视频用户选了 P3 就不能拿 P1 的缓存文件充数。
+     */
+    fun localFile(bvid: String, cid: Long = 0L): File? {
         val entry = _entries.value.firstOrNull { it.bvid == bvid } ?: return null
+        if (cid > 0L && entry.cid > 0L && entry.cid != cid) return null
         val f = File(entry.file)
         return if (f.exists() && f.length() > 0) f else null
     }
 
-    fun localUri(bvid: String): Uri? = localFile(bvid)?.let { Uri.fromFile(it) }
+    fun localUri(bvid: String, cid: Long = 0L): Uri? = localFile(bvid, cid)?.let { Uri.fromFile(it) }
 
     fun isDownloaded(bvid: String): Boolean = localFile(bvid) != null
 

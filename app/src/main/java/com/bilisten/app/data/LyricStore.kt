@@ -20,7 +20,11 @@ object LyricStore {
         val customSource: String? = null,
         val segments: List<Segment>? = null,
         /** 用户在「字幕/语音转文字」里指定使用的字幕语言轨（如 zh-CN / ai-zh） */
-        val chosenSubtitle: String? = null
+        val chosenSubtitle: String? = null,
+        /** 整体校准：歌词时间戳统一偏移（毫秒，正=延后显示，负=提前显示） */
+        val calibOffset: Long? = null,
+        /** 整体校准：歌词时间戳统一缩放倍率（>1 显示越来越慢，<1 越来越快） */
+        val calibRate: Double? = null
     )
 
     private data class Store(val entries: MutableMap<String, Entry> = LinkedHashMap())
@@ -113,6 +117,29 @@ object LyricStore {
         val s = st()
         val old = s.entries[bvid] ?: return
         s.entries[bvid] = old.copy(chosenSubtitle = null)
+        save()
+    }
+
+    // ---------------- 整体校准（偏移 + 速度倍率） ----------------
+
+    fun getCalibOffset(bvid: String): Long = entryOf(bvid).calibOffset ?: 0L
+
+    fun getCalibRate(bvid: String): Double = entryOf(bvid).calibRate ?: 1.0
+
+    fun hasCalibration(bvid: String): Boolean =
+        entryOf(bvid).calibOffset != null || entryOf(bvid).calibRate != null
+
+    /** 保存整体校准；offset=0 且 rate≈1 时视为重置 */
+    fun setCalibration(bvid: String, offsetMs: Long, rate: Double) {
+        ensure()
+        val s = st()
+        val old = s.entries[bvid] ?: Entry()
+        val entry = if (offsetMs == 0L && Math.abs(rate - 1.0) < 0.0001) {
+            old.copy(calibOffset = null, calibRate = null)
+        } else {
+            old.copy(calibOffset = offsetMs, calibRate = rate)
+        }
+        s.entries[bvid] = entry
         save()
     }
 

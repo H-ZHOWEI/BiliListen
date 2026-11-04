@@ -12,6 +12,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.bilisten.app.R
 import com.bilisten.app.data.BiliRepository
 import com.bilisten.app.databinding.FragmentFoldersBinding
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 
 class FolderFragment : Fragment(), MainActivity.Reloadable {
@@ -60,6 +62,28 @@ class FolderFragment : Fragment(), MainActivity.Reloadable {
                 adapter.submitList(folders)
                 binding.empty.visibility = if (folders.isEmpty()) View.VISIBLE else View.GONE
                 binding.emptyText.text = getString(R.string.empty_folders)
+
+                // 「created/list-all」返回的 media_count 经常不准（含失效视频/缓存滞后），
+                // 这里并发用资源列表接口的 info.media_count 校准一遍，跟B站App显示对齐
+                if (folders.isNotEmpty()) {
+                    val corrected = kotlinx.coroutines.coroutineScope {
+                        folders.map { f ->
+                            async {
+                                try {
+                                    val info = BiliRepository.fetchFavPage(f.id, 1).info
+                                    val real = info?.mediaCount ?: f.mediaCount
+                                    if (real != f.mediaCount) f.copy(mediaCount = real) else f
+                                } catch (e: Exception) {
+                                    f
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                    _binding?.let { b ->
+                        b.loading.visibility = View.GONE
+                        adapter.submitList(corrected)
+                    }
+                }
             } catch (e: Exception) {
                 binding.empty.visibility = View.VISIBLE
                 binding.emptyText.text = "加载失败：${e.message}\n下拉可重试"
