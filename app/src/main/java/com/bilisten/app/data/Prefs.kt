@@ -44,6 +44,11 @@ object Prefs {
         get() = sp.getBoolean("lyric_bili_only", false)
         set(value) = sp.edit().putBoolean("lyric_bili_only", value).apply()
 
+    /** 是否开启歌词置顶悬浮窗 */
+    var lyricOverlayOn: Boolean
+        get() = sp.getBoolean("lyric_overlay", false)
+        set(value) = sp.edit().putBoolean("lyric_overlay", value).apply()
+
     /** 上次检查更新的时间戳，用于控制自动检查频率 */
     var updateCheckedAt: Long
         get() = sp.getLong("update_checked_at", 0L)

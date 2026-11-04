@@ -356,17 +356,55 @@ object BiliRepository {
     data class SubtitleResult(val lines: List<LyricLine>, val label: String)
 
     /**
+     * 中文断句：含中文且较长的句子按标点拆成多行，时间在前一句与下一句之间插值，
+     * 避免「一句歌词占满半屏」；英文/短句原样保留。这样 B 站 AI 字幕的长段也能整齐显示。
+     */
+    private fun improveCjkLines(lines: List<LyricLine>): List<LyricLine> {
+        if (lines.isEmpty()) return lines
+        val punct = Regex("(?<=[，。！？、；：!?,.;:…])")
+        val out = ArrayList<LyricLine>()
+        for (i in lines.indices) {
+            val line = lines[i]
+            val t = line.text
+            val hasCjk = t.any { it in '\u4E00'..'\u9FFF' }
+            if (hasCjk && t.length > 12 && punct.containsMatchIn(t)) {
+                val parts = t.split(punct).map { it.trim() }.filter { it.isNotEmpty() }
+                if (parts.size >= 2) {
+                    val next = if (i + 1 < lines.size) lines[i + 1].timeMs else line.timeMs + 4000
+                    val span = (next - line.timeMs).coerceAtLeast(0)
+                    val step = span / parts.size
+                    parts.forEachIndexed { j, p -> out.add(LyricLine(line.timeMs + j * step, p)) }
+                    continue
+                }
+            }
+            out.add(line)
+        }
+        return out.sortedBy { it.timeMs }
+    }
+
+    /**
      * 取视频自带字幕（用户上传的 CC 字幕 / B 站 AI 字幕）。
      * 未登录时 B 站不返回字幕列表，所以这个功能依赖登录态。
-     * 参考 bilibili-subtitle-fetcher 的做法：player/v2 只带 bvid 也能拿到字幕，
-     * 因此依次尝试 bvid+cid → 仅 bvid → aid+cid，任一命中即返回。
+     * preferLan 非空时只取指定语言轨（用户在「字幕/语音转文字」里手动选中的那条）。
      */
-    suspend fun fetchSubtitle(bvid: String, cid: Long, aid: Long = 0L): SubtitleResult =
+    suspend fun fetchSubtitle(bvid: String, cid: Long, aid: Long = 0L, preferLan: String? = null): SubtitleResult =
         withContext(Dispatchers.IO) {
-            if (cid <= 0L && bvid.isBlank()) return@withContext SubtitleResult(emptyList(), "")
+            val subs = listSubtitles(bvid, cid, aid)
+            if (subs.isEmpty()) return@withContext SubtitleResult(emptyList(), "")
+            val pick = if (preferLan != null) {
+                subs.firstOrNull { it.lan == preferLan || it.lanDoc == preferLan }
+            } else {
+                pickSubtitle(subs)
+            } ?: return@withContext SubtitleResult(emptyList(), "")
+            loadSubtitleResult(pick)
+        }
+
+    /** 列出所有可用字幕轨（给「字幕/语音转文字」选择界面用），已过滤掉空地址的 */
+    suspend fun listSubtitles(bvid: String, cid: Long, aid: Long = 0L): List<SubtitleItem> =
+        withContext(Dispatchers.IO) {
+            if (cid <= 0L && bvid.isBlank()) return@withContext emptyList()
             try {
                 val realCid = if (cid > 0L) cid else fetchFirstCidBlocking(bvid)
-
                 val attempts = buildList {
                     if (bvid.isNotBlank() && realCid > 0L) {
                         add(mapOf("bvid" to bvid, "cid" to realCid.toString()))
@@ -376,41 +414,41 @@ object BiliRepository {
                         add(mapOf("aid" to aid.toString(), "cid" to realCid.toString()))
                     }
                 }
-
-                var subs: List<SubtitleItem> = emptyList()
                 for (params in attempts) {
                     val body = getSigned(PLAYER_V2, params)
-                    subs = parse<PlayerV2Data>(body)?.data?.subtitle?.subtitles.orEmpty()
-                    if (subs.isNotEmpty()) break
+                    val subs = parse<PlayerV2Data>(body)?.data?.subtitle?.subtitles.orEmpty()
+                    if (subs.isNotEmpty()) return@withContext subs.filter { !it.subtitleUrl.isNullOrBlank() }
                 }
-                if (subs.isEmpty()) return@withContext SubtitleResult(emptyList(), "")
-
-                val pick = pickSubtitle(subs)
-                val raw = pick?.subtitleUrl
-                if (raw.isNullOrBlank()) return@withContext SubtitleResult(emptyList(), "")
-
-                val url = when {
-                    raw.startsWith("//") -> "https:$raw"
-                    raw.startsWith("http://") -> raw.replaceFirst("http://", "https://")
-                    else -> raw
-                }
-                val json = Net.get(url)
-                val bodyLines = gson.fromJson(json, SubtitleBody::class.java)?.body.orEmpty()
-                val lines = bodyLines.mapNotNull { line ->
-                    val text = line.content
-                        ?.replace("\r", "")
-                        ?.replace("\n", " ")
-                        ?.trim()
-                        .orEmpty()
-                    if (text.isEmpty()) null else LyricLine((line.from * 1000).toLong(), text)
-                }.sortedBy { it.timeMs }
-
-                val label = if ((pick.lan ?: "").startsWith("ai")) "B站AI字幕" else "B站字幕"
-                SubtitleResult(lines, label)
-            } catch (e: Exception) {
-                SubtitleResult(emptyList(), "")
+            } catch (_: Exception) {
             }
+            emptyList()
         }
+
+    private fun loadSubtitleResult(item: SubtitleItem): SubtitleResult {
+        val raw = item.subtitleUrl ?: return SubtitleResult(emptyList(), "")
+        val url = when {
+            raw.startsWith("//") -> "https:$raw"
+            raw.startsWith("http://") -> raw.replaceFirst("http://", "https://")
+            else -> raw
+        }
+        return try {
+            val json = Net.get(url)
+            val bodyLines = gson.fromJson(json, SubtitleBody::class.java)?.body.orEmpty()
+            val lines = bodyLines.mapNotNull { line ->
+                val text = line.content
+                    ?.replace("\r", "")
+                    ?.replace("\n", " ")
+                    ?.trim()
+                    .orEmpty()
+                if (text.isEmpty()) null else LyricLine((line.from * 1000).toLong(), text)
+            }.sortedBy { it.timeMs }
+            val improved = improveCjkLines(lines)
+            val label = if ((item.lan ?: "").startsWith("ai")) "B站AI字幕" else "B站字幕"
+            SubtitleResult(improved, label)
+        } catch (e: Exception) {
+            SubtitleResult(emptyList(), "")
+        }
+    }
 
     /** 人工中文 > AI 中文 > 其它中文 > 第一个（lan 与 lan_doc 双重判断，参考 bilibili-subtitle-fetcher） */
     private fun pickSubtitle(subs: List<SubtitleItem>): SubtitleItem? {

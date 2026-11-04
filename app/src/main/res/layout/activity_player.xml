@@ -205,13 +205,13 @@
         android:orientation="horizontal">
 
         <ImageButton
-            android:id="@+id/btn_shuffle"
+            android:id="@+id/btn_mode"
             android:layout_width="46dp"
             android:layout_height="46dp"
             android:background="@drawable/bg_circle"
-            android:contentDescription="随机播放"
+            android:contentDescription="播放模式"
             android:padding="12dp"
-            android:src="@drawable/ic_shuffle"
+            android:src="@drawable/ic_play_order"
             app:tint="@color/on_bg_dim" />
 
         <ImageButton
@@ -245,17 +245,6 @@
             android:padding="12dp"
             android:src="@drawable/ic_next"
             app:tint="@color/on_bg" />
-
-        <ImageButton
-            android:id="@+id/btn_repeat"
-            android:layout_width="46dp"
-            android:layout_height="46dp"
-            android:layout_marginStart="10dp"
-            android:background="@drawable/bg_circle"
-            android:contentDescription="循环模式"
-            android:padding="12dp"
-            android:src="@drawable/ic_repeat"
-            app:tint="@color/on_bg_dim" />
     </LinearLayout>
 
     <LinearLayout

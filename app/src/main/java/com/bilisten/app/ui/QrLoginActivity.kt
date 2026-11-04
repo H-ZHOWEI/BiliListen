@@ -235,9 +235,9 @@ class QrLoginActivity : AppCompatActivity() {
         false
     }
 
-    /** 打开哔哩哔哩（深链失效时退回普通启动），用户自己点「扫一扫 → 相册」 */
+    /** 唤起哔哩哔哩：优先尝试直接打开「扫一扫」（像微信授权一样跳到扫码），不支持则退回普通启动 */
     private fun openBiliHome() {
-        val intent = BiliAppDetect.openApp(this)
+        val intent = BiliAppDetect.scanIntent(this)
         if (intent == null) {
             Toast.makeText(this, R.string.qr_open_failed, Toast.LENGTH_LONG).show()
             return

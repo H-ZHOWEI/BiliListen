@@ -13,6 +13,8 @@
         android:maxSdkVersion="28" />
     <!-- 应用内更新：下载新版本后拉起系统安装器 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 歌词置顶悬浮窗 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- Android 11+ 需要声明可见性，否则检测不到本机哔哩哔哩、也唤起不了扫一扫 -->
     <queries>
@@ -63,6 +65,11 @@
             android:name=".ui.PlayerActivity"
             android:exported="false"
             android:launchMode="singleTop" />
+
+        <!-- 歌词置顶悬浮窗：独立于播放页，常驻显示当前歌词 -->
+        <service
+            android:name=".ui.LyricOverlayService"
+            android:exported="false" />
 
         <service
             android:name=".player.PlaybackService"

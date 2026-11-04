@@ -18,7 +18,9 @@ object LyricStore {
     data class Entry(
         val customLrc: String? = null,
         val customSource: String? = null,
-        val segments: List<Segment>? = null
+        val segments: List<Segment>? = null,
+        /** 用户在「字幕/语音转文字」里指定使用的字幕语言轨（如 zh-CN / ai-zh） */
+        val chosenSubtitle: String? = null
     )
 
     private data class Store(val entries: MutableMap<String, Entry> = LinkedHashMap())
@@ -91,6 +93,26 @@ object LyricStore {
         val s = st()
         val old = s.entries[bvid] ?: return
         s.entries[bvid] = old.copy(customLrc = null, customSource = null)
+        save()
+    }
+
+    // ---------------- 指定字幕轨（语音转文字来源） ----------------
+
+    fun getChosenSubtitle(bvid: String): String? = entryOf(bvid).chosenSubtitle
+
+    fun setChosenSubtitle(bvid: String, lan: String?) {
+        ensure()
+        val s = st()
+        val old = s.entries[bvid] ?: Entry()
+        s.entries[bvid] = old.copy(chosenSubtitle = lan)
+        save()
+    }
+
+    fun clearChosenSubtitle(bvid: String) {
+        ensure()
+        val s = st()
+        val old = s.entries[bvid] ?: return
+        s.entries[bvid] = old.copy(chosenSubtitle = null)
         save()
     }
 

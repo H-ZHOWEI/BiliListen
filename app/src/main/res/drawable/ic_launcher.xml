@@ -7,7 +7,20 @@
     <path
         android:fillColor="#FB7299"
         android:pathData="M0,0h108v108h-108z" />
+    <!-- 居中音符：双音头 + 竖直符干 + 顶部横梁，整体在 108 画布内对称居中 -->
     <path
         android:fillColor="#2A0A14"
-        android:pathData="M66,30L66,66.5A10.5,10.5 0,1 1,60 57L60,44L44,48.2L44,72.5A10.5,10.5 0,1 1,38 63L38,40L66,33z" />
+        android:pathData="M27,68a13,13 0 1,0 26,0a13,13 0 1,0 -26,0Z" />
+    <path
+        android:fillColor="#2A0A14"
+        android:pathData="M51,68a13,13 0 1,0 26,0a13,13 0 1,0 -26,0Z" />
+    <path
+        android:fillColor="#2A0A14"
+        android:pathData="M51,26h4v42h-4Z" />
+    <path
+        android:fillColor="#2A0A14"
+        android:pathData="M75,26h4v42h-4Z" />
+    <path
+        android:fillColor="#2A0A14"
+        android:pathData="M49,24h32v8h-32Z" />
 </vector>

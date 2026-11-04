@@ -69,13 +69,18 @@ object LyricsRepository {
 
             // 1. B 站字幕（默认来源）
             if (forceKeyword.isNullOrBlank()) {
-                val sub = BiliRepository.fetchSubtitle(track.bvid, track.cid, track.aid)
+                val chosen = LyricStore.getChosenSubtitle(track.bvid)
+                val sub = BiliRepository.fetchSubtitle(track.bvid, track.cid, track.aid, chosen)
                 if (sub.lines.isNotEmpty()) {
                     val result = finalize(
                         LyricResult(sub.lines, sub.label.ifBlank { "B站字幕" }, keyword)
                     )
                     synchronized(cache) { cache[key] = result }
                     return@withContext result
+                }
+                // 纯音乐 / 伴奏：B 站也没字幕时，不去网上乱搜，避免匹配到别的歌的歌词
+                if (chosen == null && isLikelyInstrumental(track.rawTitle)) {
+                    return@withContext LyricResult(emptyList(), "", keyword)
                 }
             }
 
@@ -128,6 +133,28 @@ object LyricsRepository {
 
     internal fun nameMatches(query: String, name: String?): Boolean =
         nameSimilarity(query, name.orEmpty()) >= 0.5
+
+    /**
+     * 判断标题是否像「纯音乐 / 伴奏 / BGM」——这类视频没有歌词，
+     * 如果还去网易云 / QQ / 酷狗盲搜，往往会拿到同名的“带歌词版本”而张冠李戴。
+     * 命中强信号词就判定为纯音乐；但若标题明显是翻唱/演唱类，则不拦截（它们通常有歌词）。
+     */
+    internal fun isLikelyInstrumental(rawTitle: String): Boolean {
+        val lower = rawTitle.lowercase()
+        val keywords = listOf(
+            "纯音乐", "纯伴奏", "伴奏", "背景音乐", "bgm", "轻音乐", "间奏",
+            "无歌词", "纯音", "纯享", "纯钢琴", "纯吉他", "纯小提琴",
+            "钢琴曲", "吉他曲", "小提琴曲", "八音盒", "无人声", "纯器乐",
+            "instrumental"
+        )
+        if (!keywords.any { lower.contains(it) }) return false
+        // 翻唱 / 演唱类标题即使含“伴奏/钢琴”也通常不缺歌词，放行
+        if (lower.contains("翻唱") || lower.contains("演唱") || lower.contains("女声")
+            || lower.contains("男声") || lower.contains("合唱") || lower.contains("原唱")
+            || lower.contains("清唱") || lower.contains("vocal") || lower.contains("歌词")
+        ) return false
+        return true
+    }
 
     internal data class NeSearchResp(val result: NeResult? = null, val code: Int = -1)
     internal data class NeResult(val songs: List<NeSong>? = null)

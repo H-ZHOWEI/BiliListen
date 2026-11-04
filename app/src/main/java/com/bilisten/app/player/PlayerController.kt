@@ -266,6 +266,30 @@ object PlayerController {
     }
 
     /**
+     * 用一个按钮循环切换播放模式（仿主流音乐 App）：
+     * 顺序播放 → 随机播放 → 单曲循环 →（回到）顺序播放。
+     */
+    fun cyclePlayMode() {
+        val c = controller ?: return
+        val shuffle = c.shuffleModeEnabled
+        val repeat = c.repeatMode
+        when {
+            !shuffle && repeat == Player.REPEAT_MODE_OFF -> {
+                c.shuffleModeEnabled = true
+                c.repeatMode = Player.REPEAT_MODE_OFF
+            }
+            shuffle && repeat == Player.REPEAT_MODE_OFF -> {
+                c.shuffleModeEnabled = false
+                c.repeatMode = Player.REPEAT_MODE_ONE
+            }
+            else -> {
+                c.shuffleModeEnabled = false
+                c.repeatMode = Player.REPEAT_MODE_OFF
+            }
+        }
+    }
+
+    /**
      * 视频画面模式：把当前 MediaItem 原地换成整段 mp4（bilivideo://），
      * 保留播放进度；关掉时换回纯音频。
      */

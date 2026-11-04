@@ -4,7 +4,9 @@ import android.content.Intent
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputType
+import androidx.activity.result.contract.ActivityResultContracts
 import android.view.Gravity
 import android.view.View
 import android.widget.EditText
@@ -19,6 +21,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import coil.load
 import com.bilisten.app.R
+import com.bilisten.app.data.BiliRepository
 import com.bilisten.app.data.Downloads
 import com.bilisten.app.data.LyricLine
 import com.bilisten.app.data.LyricStore
@@ -32,6 +35,8 @@ import com.bilisten.app.util.Fmt
 import com.google.android.material.slider.Slider
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class PlayerActivity : AppCompatActivity() {
 
@@ -43,6 +48,15 @@ class PlayerActivity : AppCompatActivity() {
     private var userSeeking = false
     private var loadedBvid = ""
     private var currentTrack: Track? = null
+
+    private val overlayPermLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (Settings.canDrawOverlays(this)) {
+            Prefs.lyricOverlayOn = true
+            startLyricOverlay()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,8 +84,10 @@ class PlayerActivity : AppCompatActivity() {
         binding.btnPlay.setOnClickListener { PlayerController.toggle() }
         binding.btnPrev.setOnClickListener { PlayerController.previous() }
         binding.btnNext.setOnClickListener { PlayerController.next() }
-        binding.btnShuffle.setOnClickListener { PlayerController.toggleShuffle() }
-        binding.btnRepeat.setOnClickListener { PlayerController.cycleRepeat() }
+        binding.btnMode.setOnClickListener {
+            PlayerController.cyclePlayMode()
+            Toast.makeText(this, playModeLabel(), Toast.LENGTH_SHORT).show()
+        }
         binding.btnSpeed.setOnClickListener {
             PlayerController.cycleSpeed()
             binding.btnSpeed.text = speedLabel(PlayerController.speed.value)
@@ -124,29 +140,10 @@ class PlayerActivity : AppCompatActivity() {
                     }
                 }
                 launch {
-                    PlayerController.shuffleOn.collect { on ->
-                        binding.btnShuffle.setColorFilter(
-                            getColor(if (on) R.color.bili_pink else R.color.on_bg_dim)
-                        )
-                    }
+                    PlayerController.shuffleOn.collect { applyPlayMode() }
                 }
                 launch {
-                    PlayerController.repeatMode.collect { mode ->
-                        when (mode) {
-                            androidx.media3.common.Player.REPEAT_MODE_ONE -> {
-                                binding.btnRepeat.setImageResource(R.drawable.ic_repeat_one)
-                                binding.btnRepeat.setColorFilter(getColor(R.color.bili_pink))
-                            }
-                            androidx.media3.common.Player.REPEAT_MODE_ALL -> {
-                                binding.btnRepeat.setImageResource(R.drawable.ic_repeat)
-                                binding.btnRepeat.setColorFilter(getColor(R.color.bili_pink))
-                            }
-                            else -> {
-                                binding.btnRepeat.setImageResource(R.drawable.ic_repeat)
-                                binding.btnRepeat.setColorFilter(getColor(R.color.on_bg_dim))
-                            }
-                        }
-                    }
+                    PlayerController.repeatMode.collect { applyPlayMode() }
                 }
                 launch {
                     PlayerController.errorText.collect { msg ->
@@ -161,6 +158,46 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    // ---------------- 歌词悬浮窗 ----------------
+
+    private fun hasOverlayPerm(): Boolean = Settings.canDrawOverlays(this)
+
+    private fun startLyricOverlay() {
+        if (!hasOverlayPerm()) return
+        try {
+            startService(Intent(this, LyricOverlayService::class.java))
+        } catch (e: Exception) {
+            Toast.makeText(this, "悬浮窗启动失败：${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun stopLyricOverlay() {
+        stopService(Intent(this, LyricOverlayService::class.java))
+    }
+
+    private fun toggleLyricOverlay() {
+        if (Prefs.lyricOverlayOn) {
+            Prefs.lyricOverlayOn = false
+            stopLyricOverlay()
+            Toast.makeText(this, "已关闭歌词悬浮窗", Toast.LENGTH_SHORT).show()
+        } else {
+            if (hasOverlayPerm()) {
+                Prefs.lyricOverlayOn = true
+                startLyricOverlay()
+            } else {
+                Toast.makeText(this, "请允许「显示在其他应用上层」后再次开启", Toast.LENGTH_LONG).show()
+                overlayPermLauncher.launch(
+                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                )
+            }
+        }
+    }
+
+    /** 回到播放页时，若之前开着悬浮窗且权限仍在，则重新挂上 */
+    private fun syncOverlay() {
+        if (Prefs.lyricOverlayOn && hasOverlayPerm()) startLyricOverlay()
     }
 
     private fun onTrackChanged(track: Track?) {
@@ -179,6 +216,29 @@ class PlayerActivity : AppCompatActivity() {
             loadedBvid = track.bvid
             binding.tvDuration.text = Fmt.duration(track.durationMs)
             loadLyrics(track, null)
+        }
+    }
+
+    /** 根据当前 shuffle / repeat 状态刷新「播放模式」按钮的图标与颜色 */
+    private fun applyPlayMode() {
+        val shuffle = PlayerController.shuffleOn.value
+        val repeat = PlayerController.repeatMode.value
+        val (icon, color, desc) = when {
+            shuffle -> Triple(R.drawable.ic_shuffle, R.color.bili_pink, "随机播放")
+            repeat == androidx.media3.common.Player.REPEAT_MODE_ONE ->
+                Triple(R.drawable.ic_repeat_one, R.color.bili_pink, "单曲循环")
+            else -> Triple(R.drawable.ic_play_order, R.color.on_bg_dim, "顺序播放")
+        }
+        binding.btnMode.setImageResource(icon)
+        binding.btnMode.setColorFilter(getColor(color))
+        binding.btnMode.contentDescription = desc
+    }
+
+    private fun playModeLabel(): String {
+        return when {
+            PlayerController.shuffleOn.value -> "随机播放"
+            PlayerController.repeatMode.value == androidx.media3.common.Player.REPEAT_MODE_ONE -> "单曲循环"
+            else -> "顺序播放"
         }
     }
 
@@ -363,6 +423,13 @@ class PlayerActivity : AppCompatActivity() {
         if (LyricStore.getSegments(track.bvid).isNotEmpty()) {
             popup.menu.add(0, 9, 8, "重置歌词校准")
         }
+        popup.menu.add(0, 10, 9, "歌词悬浮窗（置顶显示）").apply {
+            isCheckable = true
+            isChecked = Prefs.lyricOverlayOn
+        }
+        popup.menu.add(0, 11, 10, "字幕 / 语音转文字").apply {
+            isCheckable = false
+        }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> {
@@ -442,10 +509,23 @@ class PlayerActivity : AppCompatActivity() {
                     loadLyrics(track, null)
                     true
                 }
+                10 -> {
+                    toggleLyricOverlay()
+                    true
+                }
+                11 -> {
+                    showSubtitlePicker(track)
+                    true
+                }
                 else -> false
             }
         }
         popup.show()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        syncOverlay()
     }
 
     override fun onDestroy() {
@@ -515,7 +595,58 @@ class PlayerActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun fractionToMs(fraction: Float): Long {        val total = if (PlayerController.durationMs.value > 0) {
+    /** 选择字幕轨作为歌词来源：B 站 AI 字幕本质是「语音转文字」，上传者开启后才可用 */
+    private fun showSubtitlePicker(track: Track) {
+        lifecycleScope.launch {
+            val subs = try {
+                BiliRepository.listSubtitles(track.bvid, track.cid, track.aid)
+            } catch (_: Exception) {
+                emptyList()
+            }
+            val chosen = LyricStore.getChosenSubtitle(track.bvid)
+            val labels = ArrayList<String>()
+            val lans = ArrayList<String?>()
+            labels.add("自动（默认，优先人工字幕）")
+            lans.add(null)
+            subs.forEach { s ->
+                val isAi = (s.lan ?: "").startsWith("ai")
+                val doc = s.lanDoc?.takeIf { it.isNotBlank() } ?: s.lan.orEmpty()
+                labels.add(if (isAi) "AI 字幕（语音转文字）· $doc" else "字幕 · $doc")
+                lans.add(s.lan)
+            }
+            withContext(Dispatchers.Main) {
+                if (labels.size == 1) {
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        "这个视频没有可用字幕，无法使用语音转文字（需上传者开启 B 站 AI 字幕）",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@withContext
+                }
+                var checked = 0
+                lans.forEachIndexed { i, l -> if (l == chosen) checked = i }
+                AlertDialog.Builder(this@PlayerActivity)
+                    .setTitle("选择字幕（歌词 / 语音转文字来源）")
+                    .setSingleChoiceItems(labels.toTypedArray(), checked) { d, which ->
+                        d.dismiss()
+                        val lan = lans[which]
+                        LyricStore.setChosenSubtitle(track.bvid, lan)
+                        LyricsRepository.invalidate(track.bvid)
+                        Toast.makeText(
+                            this@PlayerActivity,
+                            if (lan == null) "已恢复自动选择字幕" else "已指定字幕来源，重新加载中…",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        loadLyrics(track, null)
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun fractionToMs(fraction: Float): Long {
+        val total = if (PlayerController.durationMs.value > 0) {
             PlayerController.durationMs.value
         } else currentTrack?.durationMs ?: 0L
         return (total * (fraction / 1000f)).toLong()
