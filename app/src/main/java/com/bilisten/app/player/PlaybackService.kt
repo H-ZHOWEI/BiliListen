@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
@@ -13,6 +14,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.bilisten.app.data.Net
+import com.bilisten.app.data.SessionStore
 import com.bilisten.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -106,12 +108,25 @@ class PlaybackService : MediaSessionService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = mediaSession?.player
+        // 被从最近任务划掉前把进度钉死，下次打开才能精确回到原处
+        val pos = if (player != null && player.playbackState != Player.STATE_IDLE) {
+            player.currentPosition
+        } else {
+            PlayerController.positionMs.value
+        }
+        SessionStore.savePosition(pos, force = true)
         if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
             stopSelf()
         }
     }
 
     override fun onDestroy() {
+        // 释放播放器前最后再记一次进度
+        mediaSession?.player?.let { p ->
+            if (p.playbackState != Player.STATE_IDLE) {
+                SessionStore.savePosition(p.currentPosition, force = true)
+            }
+        }
         scope.cancel()
         mediaSession?.run {
             player.release()

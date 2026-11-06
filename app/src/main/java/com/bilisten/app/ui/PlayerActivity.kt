@@ -32,6 +32,7 @@ import com.bilisten.app.data.LyricStore
 import com.bilisten.app.data.PageStore
 import com.bilisten.app.data.PlaylistStore
 import com.bilisten.app.data.Prefs
+import com.bilisten.app.data.SessionStore
 import com.bilisten.app.data.Track
 import com.bilisten.app.databinding.ActivityPlayerBinding
 import com.bilisten.app.player.LyricEngine
@@ -465,6 +466,10 @@ class PlayerActivity : AppCompatActivity() {
         popup.menu.add(0, 13, 13, "选择分P（只保留某个分P）")
         popup.menu.add(0, 14, 14, "加入我的歌单")
         popup.menu.add(0, 15, 15, "屏幕常亮设置")
+        popup.menu.add(0, 17, 16, "启动时自动续播上次的歌").apply {
+            isCheckable = true
+            isChecked = Prefs.resumeAutoPlay
+        }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> {
@@ -576,6 +581,16 @@ class PlayerActivity : AppCompatActivity() {
                     ).show()
                     true
                 }
+                17 -> {
+                    Prefs.resumeAutoPlay = !Prefs.resumeAutoPlay
+                    Toast.makeText(
+                        this,
+                        if (Prefs.resumeAutoPlay) "下次打开 App 会自动接着播上次那首"
+                        else "下次打开只恢复进度，点播放才出声",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    true
+                }
                 else -> false
             }
         }
@@ -591,6 +606,8 @@ class PlayerActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         screenHandler.removeCallbacksAndMessages(null)
+        // 立刻把进度落盘，防止用户从最近任务划掉后回不到原处
+        SessionStore.savePosition(PlayerController.realPosition(), force = true)
     }
 
     override fun onDestroy() {

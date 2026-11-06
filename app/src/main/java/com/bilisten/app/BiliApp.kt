@@ -9,6 +9,7 @@ import com.bilisten.app.data.Net
 import com.bilisten.app.data.PageStore
 import com.bilisten.app.data.PlaylistStore
 import com.bilisten.app.data.Prefs
+import com.bilisten.app.data.SessionStore
 import com.bilisten.app.player.PlayerController
 
 class BiliApp : Application() {
@@ -21,6 +22,8 @@ class BiliApp : Application() {
         LyricStore.init(this)
         PageStore.init(this)
         PlaylistStore.init(this)
+        SessionStore.init(this)
+        SessionStore.preload()
 
         // B 站图片有防盗链，复用同一个带 Referer 的 OkHttp 客户端
         Coil.setImageLoader(

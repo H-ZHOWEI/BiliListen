@@ -25,6 +25,8 @@ import com.bilisten.app.data.Updater
 import com.bilisten.app.databinding.ActivityMainBinding
 import com.bilisten.app.databinding.DialogUpdateBinding
 import com.bilisten.app.player.PlayerController
+import com.bilisten.app.util.Fmt
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -127,12 +129,30 @@ class MainActivity : AppCompatActivity() {
                         } else {
                             mini.root.visibility = android.view.View.VISIBLE
                             mini.miniTitle.text = track.title
-                            mini.miniArtist.text = track.artist
                             if (track.cover.isNotBlank()) {
                                 mini.miniCover.load(track.cover)
                             }
                         }
                     }
+                }
+                // 副标题：播放中是 UP 主；停着不动时提示「上次听到 xx:xx」，一眼看出能接着听
+                launch {
+                    combine(
+                        PlayerController.current,
+                        PlayerController.isPlaying,
+                        PlayerController.positionMs
+                    ) { t, playing, pos -> Triple(t, playing, pos) }
+                        .collect { (track, playing, pos) ->
+                            val base = track?.artist.orEmpty()
+                            val text = if (track != null && !playing && pos > 5000L) {
+                                "$base · 上次听到 ${Fmt.duration(pos)}"
+                            } else {
+                                base
+                            }
+                            if (mini.miniArtist.text?.toString() != text) {
+                                mini.miniArtist.text = text
+                            }
+                        }
                 }
                 launch {
                     PlayerController.isPlaying.collect { playing ->

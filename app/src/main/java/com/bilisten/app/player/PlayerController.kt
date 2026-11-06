@@ -11,6 +11,8 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.bilisten.app.data.Downloads
+import com.bilisten.app.data.Prefs
+import com.bilisten.app.data.SessionStore
 import com.bilisten.app.data.Track
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
@@ -55,6 +57,9 @@ object PlayerController {
     val videoMode = MutableStateFlow(false)
     private var videoBvid = ""
 
+    /** 正在恢复上次会话：这个阶段不主动拉歌词，等真正开播再说 */
+    private var restoring = false
+
     fun connect(context: Context) {
         if (future != null) return
         val app = context.applicationContext
@@ -68,10 +73,19 @@ object PlayerController {
                 c.addListener(playerListener)
                 connected.value = true
                 syncAll()
+                // 先把上次听到的位置摆好（不自动拉流），再决定要不要自动续播
+                val restored = restoreLastSession()
                 startTicker()
                 // 歌词引擎：进程级常驻，App 退后台也持续推进行（悬浮窗/车机依赖）
                 LyricEngine.start()
-                LyricEngine.onTrackChanged(current.value)
+                if (restored) {
+                    if (Prefs.resumeAutoPlay) {
+                        c.prepare()
+                        c.play()
+                    }
+                } else {
+                    LyricEngine.onTrackChanged(current.value)
+                }
             } catch (e: Exception) {
                 future = null
                 errorText.value = "播放服务连接失败：${e.message}"
@@ -79,11 +93,48 @@ object PlayerController {
         }, ContextCompat.getMainExecutor(app))
     }
 
+    /**
+     * 恢复上次退出时的播放现场：队列、当前曲目、进度、播放模式。
+     * 这里只「就位」不自动开播 —— 用户点播放键或进播放页才真正拉流，
+     * 免得一打开 App 就偷偷跑流量、或者在地铁里突然外放。
+     */
+    private fun restoreLastSession(): Boolean {
+        val c = controller ?: return false
+        // 播放服务里已经有内容（比如从后台切回来的同一进程），不要覆盖
+        if (c.mediaItemCount > 0) return false
+        val s = SessionStore.restore() ?: return false
+        if (s.tracks.isEmpty()) return false
+        return try {
+            restoring = true
+            trackMap.clear()
+            s.tracks.forEach { trackMap[keyOf(it)] = it }
+            queue.value = s.tracks
+            val items = s.tracks.map { it.toMediaItem() }
+            val index = s.index.coerceIn(0, items.size - 1)
+            // 第三个参数是起始位置：Media3 会记住，真正 prepare 时从这里开始
+            c.setMediaItems(items, index, s.positionMs)
+            c.shuffleModeEnabled = s.shuffle
+            c.repeatMode = s.repeatMode
+            if (s.speed != 1f) c.setPlaybackSpeed(s.speed)
+            current.value = s.tracks[index]
+            positionMs.value = s.positionMs
+            durationMs.value = s.tracks[index].durationMs
+            restoring = false
+            true
+        } catch (e: Exception) {
+            restoring = false
+            false
+        }
+    }
+
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             current.value = mediaItem?.mediaId?.let { trackMap[it] }
-            // 歌词引擎跟着切歌（同 bvid 换分P/换画面时不重载）
-            LyricEngine.onTrackChanged(current.value)
+            // 恢复会话阶段先不拉歌词，等用户真正开播再加载（省流量）
+            if (!restoring) {
+                // 歌词引擎跟着切歌（同 bvid 换分P/换画面时不重载）
+                LyricEngine.onTrackChanged(current.value)
+            }
             // 切到别的歌就退出视频模式，回到纯音频
             if (mediaItem?.mediaId != videoBvid) {
                 videoBvid = ""
@@ -91,11 +142,20 @@ object PlayerController {
             }
             val d = controller?.duration ?: 0L
             durationMs.value = if (d > 0) d else current.value?.durationMs ?: 0L
+            // 记住听到第几首
+            controller?.currentMediaItemIndex?.let { SessionStore.saveIndex(it) }
+            if (!restoring) SessionStore.savePosition(0L, force = true)
         }
 
         override fun onIsPlayingChanged(playing: Boolean) {
             isPlaying.value = playing
-            if (playing) startTicker()
+            if (playing) {
+                // 恢复会话后的第一次真正开播：这时候才去拉歌词
+                LyricEngine.onTrackChanged(current.value)
+                startTicker()
+            }
+            // 暂停 / 开播都是关键时刻，用播放器的真实位置落盘
+            if (!restoring) SessionStore.savePosition(realPosition(), force = true)
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -108,18 +168,43 @@ object PlayerController {
 
         override fun onShuffleModeEnabledChanged(enabled: Boolean) {
             shuffleOn.value = enabled
+            persistPlayback()
         }
 
         override fun onRepeatModeChanged(mode: Int) {
             repeatMode.value = mode
+            persistPlayback()
         }
 
         override fun onPlaybackParametersChanged(playbackParameters: androidx.media3.common.PlaybackParameters) {
             speed.value = playbackParameters.speed
+            persistPlayback()
         }
 
         override fun onPlayerError(error: PlaybackException) {
             handlePlayError(error)
+        }
+    }
+
+    private fun persistPlayback() {
+        if (restoring) return
+        SessionStore.savePlayback(
+            shuffle = shuffleOn.value,
+            repeatMode = repeatMode.value,
+            speed = speed.value
+        )
+    }
+
+    /**
+     * 真实播放位置：IDLE（还没 prepare 过）时 ExoPlayer 恒返回 0，
+     * 这时要用恢复出来的那个位置，否则会把「上次听到这里」抹掉。
+     */
+    fun realPosition(): Long {
+        val c = controller
+        return if (c != null && c.playbackState != Player.STATE_IDLE) {
+            c.currentPosition.coerceAtLeast(0)
+        } else {
+            positionMs.value
         }
     }
 
@@ -204,9 +289,15 @@ object PlayerController {
         ticker = scope.launch {
             while (isActive) {
                 controller?.let { c ->
-                    positionMs.value = c.currentPosition.coerceAtLeast(0)
-                    val d = c.duration
-                    if (d > 0) durationMs.value = d
+                    // IDLE = 恢复会话后还没真正开播，这时 currentPosition 恒为 0，
+                    // 不能拿它覆盖掉恢复出来的「上次听到这里」
+                    if (c.playbackState != Player.STATE_IDLE) {
+                        positionMs.value = c.currentPosition.coerceAtLeast(0)
+                        val d = c.duration
+                        if (d > 0) durationMs.value = d
+                        // 记住听到第几秒（内部节流，几秒才落盘一次）
+                        if (c.isPlaying) SessionStore.savePosition(positionMs.value)
+                    }
                 }
                 delay(400)
             }
@@ -235,6 +326,10 @@ object PlayerController {
         c.prepare()
         c.play()
         current.value = tracks[index]
+        // 记住这次的队列，下次打开还能接着听
+        SessionStore.saveQueue(tracks, index)
+        SessionStore.savePosition(0L, force = true)
+        persistPlayback()
     }
 
     fun playAt(index: Int) {
@@ -255,12 +350,28 @@ object PlayerController {
     }
 
     fun next() {
-        controller?.seekToNextMediaItem()
+        val c = controller ?: return
+        // 恢复会话后还没开播过（IDLE）：切歌同时直接开播，符合直觉
+        val idle = c.playbackState == Player.STATE_IDLE
+        c.seekToNextMediaItem()
+        if (idle) {
+            c.prepare()
+            c.play()
+        }
     }
 
     fun previous() {
         val c = controller ?: return
-        if (c.currentPosition > 4000) c.seekTo(0) else c.seekToPreviousMediaItem()
+        if (c.currentPosition > 4000) {
+            c.seekTo(0)
+            return
+        }
+        val idle = c.playbackState == Player.STATE_IDLE
+        c.seekToPreviousMediaItem()
+        if (idle) {
+            c.prepare()
+            c.play()
+        }
     }
 
     fun seekTo(ms: Long) {
@@ -357,6 +468,7 @@ object PlayerController {
         positionMs.value = 0L
         durationMs.value = 0L
         isPlaying.value = false
+        SessionStore.clear()
     }
 
     private fun Track.toMediaItem(video: Boolean = false): MediaItem {
@@ -393,6 +505,7 @@ object PlayerController {
             c.prepare()
             c.play()
             current.value = newTrack
+            SessionStore.saveQueue(queue.value, idx)
         } catch (e: Exception) {
             errorText.value = "切换分P失败：${e.message}"
         }
