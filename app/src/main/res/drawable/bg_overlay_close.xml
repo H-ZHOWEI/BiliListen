@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 悬浮窗运行在 Service 的系统主题里，不能用 ?attr/ 主题属性，
+     这里用自带颜色的 ripple，任何 Context 下都能 inflate -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#33FFFFFF">
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#00000000" />
+        </shape>
+    </item>
+</ripple>

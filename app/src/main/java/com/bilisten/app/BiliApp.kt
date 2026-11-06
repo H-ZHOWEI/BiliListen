@@ -11,12 +11,14 @@ import com.bilisten.app.data.PlaylistStore
 import com.bilisten.app.data.Prefs
 import com.bilisten.app.data.SessionStore
 import com.bilisten.app.player.PlayerController
+import com.bilisten.app.util.CrashReporter
 
 class BiliApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
         instance = this
+        CrashReporter.install(this)
         Prefs.init(this)
         Downloads.init(this)
         LyricStore.init(this)

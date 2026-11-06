@@ -16,6 +16,7 @@ import com.bilisten.app.data.DemoPlaylist
 import com.bilisten.app.data.Prefs
 import com.bilisten.app.databinding.ActivityLoginBinding
 import com.bilisten.app.player.PlayerController
+import com.bilisten.app.util.CrashReporter
 import kotlinx.coroutines.launch
 
 class LoginActivity : AppCompatActivity() {

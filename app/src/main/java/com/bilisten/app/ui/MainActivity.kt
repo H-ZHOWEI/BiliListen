@@ -25,6 +25,7 @@ import com.bilisten.app.data.Updater
 import com.bilisten.app.databinding.ActivityMainBinding
 import com.bilisten.app.databinding.DialogUpdateBinding
 import com.bilisten.app.player.PlayerController
+import com.bilisten.app.util.CrashReporter
 import com.bilisten.app.util.Fmt
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -48,6 +49,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         askNotificationPermission()
+
+        // 上次崩溃过就把堆栈摆出来，方便用户一键复制反馈
+        CrashReporter.maybeShow(this)
 
         binding.toolbar.setOnMenuItemClickListener { item ->
             when (item.itemId) {

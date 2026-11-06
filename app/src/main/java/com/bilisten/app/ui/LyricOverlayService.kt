@@ -49,7 +49,25 @@ class LyricOverlayService : Service() {
         return START_STICKY
     }
 
+    /**
+     * 悬挂浮窗。整段包在 try 里：悬浮窗属于「锦上添花」，
+     * 任何异常（主题属性缺失、权限被撤销、窗口 token 失效……）
+     * 都不该连累 App 让用户闪退，失败就安静退出。
+     */
     private fun showOverlay() {
+        try {
+            buildOverlay()
+        } catch (e: Throwable) {
+            try {
+                java.io.File(filesDir, "overlay_error.txt").writeText(e.stackTraceToString())
+            } catch (_: Throwable) {
+            }
+            removeOverlay()
+            stopSelf()
+        }
+    }
+
+    private fun buildOverlay() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         this.wm = wm
         val v = LayoutInflater.from(this).inflate(R.layout.overlay_lyric, null)
