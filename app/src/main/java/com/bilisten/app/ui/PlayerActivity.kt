@@ -90,6 +90,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun setupControls() {
         binding.btnBack.setOnClickListener { finish() }
         binding.btnMore.setOnClickListener { showMoreMenu(it) }
+        binding.btnFav.setOnClickListener { toggleFav() }
 
         binding.btnPlay.setOnClickListener { PlayerController.toggle() }
         binding.btnPrev.setOnClickListener { PlayerController.previous() }
@@ -165,6 +166,11 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 launch {
                     PlayerController.videoMode.collect { on -> applyVideoMode(on) }
+                }
+
+                // 「我喜欢」变动（播放页内点了心、其他页面改了歌单）都同步按钮状态
+                launch {
+                    PlaylistStore.changed.collect { updateFavIcon(currentTrack) }
                 }
 
                 // 歌词：全部来自进程级常驻的 LyricEngine（App 退后台也持续推进）
@@ -313,6 +319,39 @@ class PlayerActivity : AppCompatActivity() {
             binding.tvDuration.text = Fmt.duration(track.durationMs)
             loadLyrics(track, null)
         }
+        updateFavIcon(track)
+    }
+
+    // ---------------- 「我喜欢」一键收藏 ----------------
+
+    /** 心形按钮状态：已喜欢=实心粉红，未喜欢=描边 */
+    private fun updateFavIcon(track: Track?) {
+        if (track == null) {
+            binding.btnFav.setImageResource(R.drawable.ic_fav_off)
+            binding.btnFav.setColorFilter(getColor(R.color.on_bg_dim))
+            return
+        }
+        if (PlaylistStore.isFav(track.bvid)) {
+            binding.btnFav.setImageResource(R.drawable.ic_fav_on)
+            binding.btnFav.setColorFilter(getColor(R.color.bili_pink))
+        } else {
+            binding.btnFav.setImageResource(R.drawable.ic_fav_off)
+            binding.btnFav.setColorFilter(getColor(R.color.on_bg))
+        }
+    }
+
+    private fun toggleFav() {
+        val track = currentTrack
+        if (track == null) {
+            Toast.makeText(this, "先播放一首歌再收藏", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val added = PlaylistStore.toggleFav(track)
+        Toast.makeText(
+            this,
+            if (added) "❤ 已加入「我喜欢」" else "已从「我喜欢」移除",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     /** 根据当前 shuffle / repeat 状态刷新「播放模式」按钮的图标与颜色 */

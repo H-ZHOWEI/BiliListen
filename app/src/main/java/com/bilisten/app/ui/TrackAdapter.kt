@@ -24,6 +24,8 @@ class TrackAdapter(
 
     private var playingBvid: String? = null
     private var dlStates: Map<String, DlState> = emptyMap()
+    /** 已点「我喜欢」的 bvid 集合，命中就在标题旁画小红心 */
+    private var favBvids: Set<String> = emptySet()
 
     fun setPlaying(bvid: String?) {
         if (playingBvid == bvid) return
@@ -34,6 +36,12 @@ class TrackAdapter(
     fun setDownloads(states: Map<String, DlState>) {
         if (dlStates == states) return
         dlStates = states
+        notifyDataSetChanged()
+    }
+
+    fun setFavs(bvids: Set<String>) {
+        if (favBvids == bvids) return
+        favBvids = bvids
         notifyDataSetChanged()
     }
 
@@ -59,6 +67,7 @@ class TrackAdapter(
         b.tvTitle.text = track.title
         b.tvArtist.text = track.artist
         b.tvDuration.text = Fmt.duration(track.durationMs)
+        b.ivFav.visibility = if (favBvids.contains(track.bvid)) View.VISIBLE else View.GONE
 
         val highlight = ctx.getColor(R.color.bili_pink)
         val normal = ctx.getColor(R.color.on_bg)

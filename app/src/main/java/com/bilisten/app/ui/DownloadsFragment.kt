@@ -13,6 +13,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.bilisten.app.data.DlEntry
 import com.bilisten.app.data.Downloads
+import com.bilisten.app.data.PlaylistStore
 import com.bilisten.app.data.Track
 import com.bilisten.app.databinding.FragmentTracksBinding
 import com.bilisten.app.player.PlayerController
@@ -67,6 +68,8 @@ class DownloadsFragment : Fragment() {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { PlayerController.current.collect { adapter.setPlaying(it?.bvid) } }
                 launch { Downloads.states.collect { adapter.setDownloads(it) } }
+                // 标出已点「我喜欢」的歌
+                launch { PlaylistStore.changed.collect { adapter.setFavs(PlaylistStore.likedBvids()) } }
                 launch {
                     Downloads.entries.collect {
                         render(it)

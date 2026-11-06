@@ -91,6 +91,8 @@ class PlaylistDetailFragment : Fragment() {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { PlayerController.current.collect { adapter.setPlaying(it?.bvid) } }
                 launch { Downloads.states.collect { adapter.setDownloads(it) } }
+                // 标出已点「我喜欢」的歌
+                launch { PlaylistStore.changed.collect { adapter.setFavs(PlaylistStore.likedBvids()) } }
                 launch {
                     PlaylistStore.changed.collect {
                         // 在别的界面改了歌单内容时同步
@@ -105,12 +107,14 @@ class PlaylistDetailFragment : Fragment() {
 
     private fun showTrackMenu(track: Track) {
         val ctx = context ?: return
+        val removeLabel =
+            if (playlistId == PlaylistStore.FAV_ID) "从「我喜欢」移除" else "从歌单移除"
         AlertDialog.Builder(ctx)
             .setTitle(track.title)
-            .setItems(arrayOf("从歌单移除")) { _, _ ->
+            .setItems(arrayOf(removeLabel)) { _, _ ->
                 PlaylistStore.remove(playlistId, track)
                 refresh()
-                Toast.makeText(ctx, "已从歌单移除（不影响B站收藏）", Toast.LENGTH_SHORT).show()
+                Toast.makeText(ctx, "已移除（不影响B站收藏）", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("取消", null)
             .show()
@@ -124,7 +128,9 @@ class PlaylistDetailFragment : Fragment() {
         binding.tvFolderTitle.text = playlist.name
         binding.tvFolderSub.text = "${tracks.size} 首 · 点按播放 · 长按移出歌单"
         binding.empty.visibility = if (tracks.isEmpty()) View.VISIBLE else View.GONE
-        binding.emptyText.text = "歌单还是空的：到收藏夹长按歌曲「加入我的歌单」"
+        binding.emptyText.text =
+            if (playlistId == PlaylistStore.FAV_ID) "还没有喜欢的歌\n播放页右上角点 ❤ 即可收藏"
+            else "歌单还是空的：到收藏夹长按歌曲「加入我的歌单」"
     }
 
     override fun onDestroyView() {

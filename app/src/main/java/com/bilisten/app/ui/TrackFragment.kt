@@ -84,6 +84,8 @@ class TrackFragment : Fragment(), MainActivity.Reloadable {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { PlayerController.current.collect { track -> adapter.setPlaying(track?.bvid) } }
                 launch { Downloads.states.collect { adapter.setDownloads(it) } }
+                // 标出已点「我喜欢」的歌（歌单变动时自动刷新）
+                launch { PlaylistStore.changed.collect { adapter.setFavs(PlaylistStore.likedBvids()) } }
             }
         }
 

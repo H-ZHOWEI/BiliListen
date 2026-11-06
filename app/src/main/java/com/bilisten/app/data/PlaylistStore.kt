@@ -16,6 +16,9 @@ import java.util.UUID
  */
 object PlaylistStore {
 
+    /** 默认「我喜欢」歌单的固定 id（用户改名不影响） */
+    const val FAV_ID = "fav"
+
     data class Playlist(
         val id: String,
         val name: String,
@@ -67,7 +70,7 @@ object PlaylistStore {
         if (s.playlists.none { it.builtin }) {
             s.playlists.add(
                 Playlist(
-                    id = "fav",
+                    id = FAV_ID,
                     name = "我喜欢",
                     tracks = emptyList(),
                     createdAt = System.currentTimeMillis(),
@@ -140,6 +143,34 @@ object PlaylistStore {
     fun playlistsOf(track: Track): Set<String> =
         st().playlists.filter { p -> p.tracks.any { it.bvid == track.bvid && it.cid == track.cid } }
             .map { it.id }.toSet()
+
+    // ---------------- 「我喜欢」快捷收藏 ----------------
+
+    /** 这首歌（按 bvid）是否已点「我喜欢」 */
+    fun isFav(bvid: String): Boolean =
+        st().playlists.firstOrNull { it.id == FAV_ID }?.tracks?.any { it.bvid == bvid } ?: false
+
+    /** 已点「我喜欢」的全部 bvid（列表里标小红心用） */
+    fun likedBvids(): Set<String> =
+        st().playlists.firstOrNull { it.id == FAV_ID }?.tracks?.map { it.bvid }?.toSet()
+            ?: emptySet()
+
+    /** 一键收藏/取消：true=已加入「我喜欢」，false=已取消 */
+    fun toggleFav(track: Track): Boolean {
+        val s = st()
+        val idx = s.playlists.indexOfFirst { it.id == FAV_ID }
+        if (idx < 0) return false
+        val p = s.playlists[idx]
+        return if (p.tracks.any { it.bvid == track.bvid }) {
+            s.playlists[idx] = p.copy(tracks = p.tracks.filterNot { it.bvid == track.bvid })
+            save()
+            false
+        } else {
+            s.playlists[idx] = p.copy(tracks = p.tracks + track)
+            save()
+            true
+        }
+    }
 
     fun count(): Int = st().playlists.size
 }

@@ -7,10 +7,13 @@ import android.view.ViewGroup
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.bilisten.app.R
 import com.bilisten.app.data.BiliRepository
+import com.bilisten.app.data.PlaylistStore
 import com.bilisten.app.databinding.FragmentFoldersBinding
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -41,6 +44,22 @@ class FolderFragment : Fragment(), MainActivity.Reloadable {
             ContextCompat.getColor(requireContext(), R.color.bili_pink)
         )
         binding.swipe.setOnRefreshListener { load() }
+
+        // 「我喜欢」入口：点开本地收藏歌单（和播放页 ❤ 是同一个地方）
+        binding.favEntry.setOnClickListener {
+            val name = PlaylistStore.byId(PlaylistStore.FAV_ID)?.name ?: "我喜欢"
+            (activity as? MainActivity)?.openPlaylistDetail(PlaylistStore.FAV_ID, name)
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                PlaylistStore.changed.collect {
+                    val n = PlaylistStore.byId(PlaylistStore.FAV_ID)?.tracks?.size ?: 0
+                    binding.tvFavCount.text =
+                        if (n > 0) "$n 首歌 · 点开播放" else "播放页右上角 ❤ 收藏的歌"
+                }
+            }
+        }
+
         load()
     }
 
