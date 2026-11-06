@@ -82,6 +82,7 @@ object PlayerController {
                     if (Prefs.resumeAutoPlay) {
                         c.prepare()
                         c.play()
+                        maybeAutoVideo()
                     }
                 } else {
                     LyricEngine.onTrackChanged(current.value)
@@ -153,6 +154,8 @@ object PlayerController {
                 // 恢复会话后的第一次真正开播：这时候才去拉歌词
                 LyricEngine.onTrackChanged(current.value)
                 startTicker()
+                // 用户给这首开过「显示视频画面」：再听到它就默认直接出画面
+                maybeAutoVideo()
             }
             // 暂停 / 开播都是关键时刻，用播放器的真实位置落盘
             if (!restoring) SessionStore.savePosition(realPosition(), force = true)
@@ -212,6 +215,7 @@ object PlayerController {
     private val failedBvids = LinkedHashSet<String>()
     private var skipJob: Job? = null
 
+    /** 视频画面拉不动就退回纯音频，别跳歌 */
     private fun handlePlayError(error: PlaybackException) {
         val failed = current.value
         // 视频画面拉不动就退回纯音频，别跳歌
@@ -219,6 +223,8 @@ object PlayerController {
             errorText.value = "视频画面加载失败，已切回纯音频"
             videoBvid = ""
             videoMode.value = false
+            // 记住的偏好也摘掉，避免每首开头都失败一次；想再开就重新点菜单
+            Prefs.videoBvids = Prefs.videoBvids - failed.bvid
             val c = controller
             if (c != null) {
                 val pos = if (c.playbackState == Player.STATE_READY) c.currentPosition else 0L
@@ -326,6 +332,7 @@ object PlayerController {
         c.prepare()
         c.play()
         current.value = tracks[index]
+        maybeAutoVideo()
         // 记住这次的队列，下次打开还能接着听
         SessionStore.saveQueue(tracks, index)
         SessionStore.savePosition(0L, force = true)
@@ -338,6 +345,7 @@ object PlayerController {
             c.seekTo(index, 0L)
             c.prepare()
             c.play()
+            maybeAutoVideo()
         }
     }
 
@@ -346,6 +354,7 @@ object PlayerController {
         if (c.isPlaying) c.pause() else {
             if (c.playbackState == Player.STATE_IDLE) c.prepare()
             c.play()
+            maybeAutoVideo()
         }
     }
 
@@ -358,6 +367,7 @@ object PlayerController {
             c.prepare()
             c.play()
         }
+        maybeAutoVideo()
     }
 
     fun previous() {
@@ -372,6 +382,7 @@ object PlayerController {
             c.prepare()
             c.play()
         }
+        maybeAutoVideo()
     }
 
     fun seekTo(ms: Long) {
@@ -411,6 +422,7 @@ object PlayerController {
     /**
      * 视频画面模式：把当前 MediaItem 原地换成整段 mp4（bilivideo://），
      * 保留播放进度；关掉时换回纯音频。
+     * 用户的选择按歌记住：开过的歌下次再听到自动出画面，关掉的记忆也按歌摘除。
      */
     fun setVideoMode(on: Boolean) {
         val c = controller ?: return
@@ -426,11 +438,22 @@ object PlayerController {
             c.seekTo(idx, pos)
             c.prepare()
             c.play()
+            // 成功切换后才写偏好；失败会在 handlePlayError 里摘除
+            if (on) Prefs.videoBvids = Prefs.videoBvids + track.bvid
+            else Prefs.videoBvids = Prefs.videoBvids - track.bvid
         } catch (e: Exception) {
             videoBvid = ""
             videoMode.value = false
             errorText.value = "切换视频画面失败：${e.message}"
         }
+    }
+
+    /** 正在播的歌如果用户开过视频画面（且当前不在视频模式），自动切入 */
+    private fun maybeAutoVideo() {
+        val track = current.value ?: return
+        if (videoMode.value) return
+        if (!Prefs.videoBvids.contains(track.bvid)) return
+        setVideoMode(true)
     }
 
     fun cycleRepeat() {

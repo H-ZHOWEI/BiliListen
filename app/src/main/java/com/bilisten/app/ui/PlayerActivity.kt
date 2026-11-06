@@ -482,9 +482,10 @@ class PlayerActivity : AppCompatActivity() {
             isCheckable = true
             isChecked = Prefs.lyricBiliOnly
         }
-        popup.menu.add(0, 5, 4, "显示视频画面（仅这首）").apply {
+        popup.menu.add(0, 5, 4, "显示视频画面（记住这首的选择）").apply {
             isCheckable = true
-            isChecked = PlayerController.videoMode.value
+            isChecked = PlayerController.videoMode.value ||
+                Prefs.videoBvids.contains(track.bvid)
         }
         popup.menu.add(0, 6, 5, "校准歌词（从这里开始）")
         popup.menu.add(0, 12, 6, "歌词整体微调（偏移 + 速度）")
@@ -566,6 +567,13 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 5 -> {
                     PlayerController.setVideoMode(!PlayerController.videoMode.value)
+                    Toast.makeText(
+                        this,
+                        if (PlayerController.videoMode.value)
+                            "视频画面已开启，以后听到这首会自动显示画面"
+                        else "已关闭视频画面（这首的记住也一并取消）",
+                        Toast.LENGTH_SHORT
+                    ).show()
                     true
                 }
                 6 -> {

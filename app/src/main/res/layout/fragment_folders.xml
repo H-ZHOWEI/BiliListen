@@ -78,6 +78,23 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <TextView
+            android:id="@+id/btn_folder_filter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="18dp"
+            android:layout_marginTop="2dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:drawableStart="@drawable/ic_settings"
+            android:drawablePadding="6dp"
+            android:gravity="center_vertical"
+            android:paddingVertical="10dp"
+            android:text="设置显示哪些收藏夹（隐藏非音乐夹）"
+            android:textColor="@color/on_bg_dim"
+            android:textSize="12sp"
+            app:drawableTint="@color/on_bg_dim" />
+
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"

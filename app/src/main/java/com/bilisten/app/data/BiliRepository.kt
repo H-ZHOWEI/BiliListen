@@ -76,7 +76,17 @@ object BiliRepository {
 
     suspend fun fetchFavPage(mediaId: Long, page: Int): FavPage = withContext(Dispatchers.IO) {
         val url = "$FAV_LIST?media_id=$mediaId&pn=$page&ps=20&keyword=&order=mtime&type=0&tid=0&platform=web"
-        parse<FavPage>(Net.get(url))?.data ?: FavPage()
+        val resp = parse<FavPage>(Net.get(url))
+            ?: throw IllegalStateException("收藏夹内容解析失败（返回不是合法 JSON）")
+        when {
+            resp.code == 0 -> resp.data ?: FavPage()
+            resp.code == -101 -> throw IllegalStateException("登录状态已失效，请重新登录")
+            resp.code == -352 || resp.code == -412 ->
+                throw IllegalStateException("B 站风控拦截，稍等片刻后下拉重试")
+            else -> throw IllegalStateException(
+                resp.message?.takeIf { it.isNotBlank() } ?: "读取收藏夹失败（code ${resp.code}）"
+            )
+        }
     }
 
     /** 拉取整个收藏夹（自动翻页），并应用用户保存的「只保留某个分P」选择 */
@@ -99,7 +109,8 @@ object BiliRepository {
 
     private fun toTrack(m: FavMedia): Track? {
         val bvid = m.bvid ?: return null
-        if (m.attr != 0 || m.title.isBlank() || m.title == "已失效视频") return null
+        // attr 是位掩码：bit0 = 失效视频；其他位（如隐私标记）不影响播放，不过滤
+        if ((m.attr and 1) != 0 || m.title.isBlank() || m.title == "已失效视频") return null
         val cleaned = TitleParser.clean(m.title)
         val uploader = m.upper?.name.orEmpty()
         val keyword = TitleParser.searchKeywords(cleaned, uploader).firstOrNull() ?: cleaned
@@ -319,16 +330,15 @@ object BiliRepository {
 
         var urls = emptyList<String>()
         try {
+            // html5 mp4 端点：匿名请求（不带 Cookie）最稳，带登录 Cookie 反而常被风控 -352。
+            // 这里失败不抛错，继续走 WBI 兜底。
             val html5 = "https://api.bilibili.com/x/player/playurl" +
                 "?bvid=$bvid&cid=$realCid&qn=64&type=mp4&platform=html5&high_quality=1"
-            val resp = parse<PlayUrlData>(Net.get(html5))
-            if (resp != null && resp.code != 0) {
-                throw BiliPlayException(friendlyPlayCode(resp.code, resp.message))
+            val resp = parse<PlayUrlData>(Net.get(html5, mapOf(Net.NO_COOKIE to "1")))
+            if (resp != null && resp.code == 0) {
+                urls = resp.data?.durl.orEmpty()
+                    .mapNotNull { it.url?.takeIf { u -> u.isNotBlank() } }
             }
-            urls = resp?.data?.durl.orEmpty()
-                .mapNotNull { it.url?.takeIf { u -> u.isNotBlank() } }
-        } catch (e: BiliPlayException) {
-            throw e
         } catch (e: Exception) {
             // 网络抖动等，继续走 WBI 兜底
         }

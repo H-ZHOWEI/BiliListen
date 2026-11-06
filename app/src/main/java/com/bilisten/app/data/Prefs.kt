@@ -80,6 +80,26 @@ object Prefs {
         get() = sp.getString("skipped_version", "").orEmpty()
         set(value) = sp.edit().putString("skipped_version", value).apply()
 
+    /**
+     * 被用户隐藏的收藏夹 id 集合（首页不再显示这些收藏夹）。
+     * 很多人只有一两个收藏夹是收音乐的，其余的可以在这里关掉。
+     */
+    var hiddenFolders: Set<Long>
+        get() = sp.getString("hidden_folders", "").orEmpty()
+            .split(',').mapNotNull { it.toLongOrNull() }.toSet()
+        set(value) = sp.edit()
+            .putString("hidden_folders", value.joinToString(",").ifBlank { "-" }).apply()
+
+    /**
+     * 用户开了「显示视频画面」的歌（bvid 集合）：
+     * 再听到这些歌时默认直接显示视频画面，不用每次重新点。
+     */
+    var videoBvids: Set<String>
+        get() = sp.getString("video_bvids", "").orEmpty()
+            .split(',').filter { it.isNotBlank() }.toSet()
+        set(value) = sp.edit()
+            .putString("video_bvids", value.joinToString(",").ifBlank { "-" }).apply()
+
     val isLogin: Boolean get() = cookie.contains("SESSDATA=") && mid > 0L
 
     fun clearLogin() {

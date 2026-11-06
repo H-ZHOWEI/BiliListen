@@ -25,6 +25,9 @@ class FolderFragment : Fragment(), MainActivity.Reloadable {
     private val binding get() = _binding!!
     private lateinit var adapter: FolderAdapter
 
+    /** 最近一次拉到的全部收藏夹（含被隐藏的），设置对话框直接用它 */
+    private var latestFolders: List<com.bilisten.app.data.FavFolder> = emptyList()
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -50,6 +53,8 @@ class FolderFragment : Fragment(), MainActivity.Reloadable {
             val name = PlaylistStore.byId(PlaylistStore.FAV_ID)?.name ?: "我喜欢"
             (activity as? MainActivity)?.openPlaylistDetail(PlaylistStore.FAV_ID, name)
         }
+        // 设置显示哪些收藏夹
+        binding.btnFolderFilter.setOnClickListener { showFolderFilterDialog() }
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PlaylistStore.changed.collect {
@@ -70,6 +75,90 @@ class FolderFragment : Fragment(), MainActivity.Reloadable {
 
     override fun reload() = load()
 
+    /** 按用户隐藏规则刷新列表与空态文案 */
+    private fun applyFilter() {
+        if (_binding == null) return
+        val hidden = com.bilisten.app.data.Prefs.hiddenFolders
+        val shown = latestFolders.filterNot { hidden.contains(it.id) }
+        adapter.submitList(shown)
+        binding.empty.visibility = if (shown.isEmpty()) View.VISIBLE else View.GONE
+        binding.emptyText.text = when {
+            latestFolders.isEmpty() -> getString(R.string.empty_folders)
+            shown.isEmpty() -> "所有收藏夹都被隐藏了\n点上方「设置显示哪些收藏夹」重新开启"
+            else -> getString(R.string.empty_folders)
+        }
+    }
+
+    /**
+     * 设置显示哪些收藏夹：勾选 = 显示，取消勾选 = 首页不再显示。
+     * 默认全选，用户把非音乐夹的勾去掉即可，只存本机不影响 B 站。
+     */
+    private fun showFolderFilterDialog() {
+        if (latestFolders.isEmpty()) {
+            Toast.makeText(requireContext(), "收藏夹还没加载出来，先等列表出现（或下拉刷新）", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val ctx = context ?: return
+        val hidden = com.bilisten.app.data.Prefs.hiddenFolders
+
+        val selectAll = android.widget.CheckBox(ctx).apply {
+            text = "全选"
+            textSize = 14f
+        }
+        val checks = latestFolders.map { f ->
+            android.widget.CheckBox(ctx).apply {
+                text = "${f.title}（${f.mediaCount}）"
+                textSize = 14f
+                isChecked = !hidden.contains(f.id)
+            }
+        }
+
+        var syncing = false
+        // 注意：先赋初值再挂监听，否则赋值会触发监听把子项勾选状态刷掉
+        selectAll.isChecked = checks.all { it.isChecked }
+        selectAll.setOnCheckedChangeListener { _, c ->
+            if (syncing) return@setOnCheckedChangeListener
+            syncing = true
+            checks.forEach { it.isChecked = c }
+            syncing = false
+        }
+        checks.forEach { cb ->
+            cb.setOnCheckedChangeListener { _, _ ->
+                if (syncing) return@setOnCheckedChangeListener
+                syncing = true
+                selectAll.isChecked = checks.all { it.isChecked }
+                syncing = false
+            }
+        }
+
+        val container = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(56, 36, 56, 0)
+            addView(selectAll)
+            addView(View(ctx).apply { minimumHeight = 16 })
+            checks.forEach { addView(it) }
+        }
+
+        val scroll = android.widget.ScrollView(ctx).apply { addView(container) }
+        androidx.appcompat.app.AlertDialog.Builder(ctx)
+            .setTitle("选择要显示的收藏夹（勾选=显示）")
+            .setView(scroll)
+            .setPositiveButton("保存") { _, _ ->
+                val newHidden = latestFolders.mapIndexed { i, f ->
+                    if (checks[i].isChecked) null else f.id
+                }.filterNotNull().toSet()
+                com.bilisten.app.data.Prefs.hiddenFolders = newHidden
+                applyFilter()
+                Toast.makeText(
+                    ctx,
+                    "已保存：显示 ${latestFolders.size - newHidden.size} / ${latestFolders.size} 个收藏夹",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     private fun load() {
         if (_binding == null) return
         binding.loading.visibility = View.VISIBLE
@@ -78,15 +167,16 @@ class FolderFragment : Fragment(), MainActivity.Reloadable {
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val folders = BiliRepository.fetchFolders(com.bilisten.app.data.Prefs.mid)
-                adapter.submitList(folders)
-                binding.empty.visibility = if (folders.isEmpty()) View.VISIBLE else View.GONE
-                binding.emptyText.text = getString(R.string.empty_folders)
+                latestFolders = folders
+                applyFilter()
 
                 // 「created/list-all」返回的 media_count 经常不准（含失效视频/缓存滞后），
                 // 这里并发用资源列表接口的 info.media_count 校准一遍，跟B站App显示对齐
-                if (folders.isNotEmpty()) {
+                val hidden = com.bilisten.app.data.Prefs.hiddenFolders
+                val shown = folders.filterNot { hidden.contains(it.id) }
+                if (shown.isNotEmpty()) {
                     val corrected = kotlinx.coroutines.coroutineScope {
-                        folders.map { f ->
+                        shown.map { f ->
                             async {
                                 try {
                                     val info = BiliRepository.fetchFavPage(f.id, 1).info
@@ -98,10 +188,9 @@ class FolderFragment : Fragment(), MainActivity.Reloadable {
                             }
                         }.awaitAll()
                     }
-                    _binding?.let { b ->
-                        b.loading.visibility = View.GONE
-                        adapter.submitList(corrected)
-                    }
+                    val byId = corrected.associateBy { it.id }
+                    latestFolders = latestFolders.map { byId[it.id] ?: it }
+                    _binding?.let { applyFilter() }
                 }
             } catch (e: Exception) {
                 binding.empty.visibility = View.VISIBLE

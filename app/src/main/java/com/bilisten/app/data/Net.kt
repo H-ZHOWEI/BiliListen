@@ -19,6 +19,13 @@ object Net {
     const val REFERER = "https://www.bilibili.com/"
 
     /**
+     * 请求头里的「免 Cookie」标记：带这个头的请求不会附加登录 Cookie。
+     * B 站的 html5 mp4 播放接口带着登录 Cookie 反而经常被风控（-352），
+     * 匿名请求反而稳定，视频画面解析走这条路。
+     */
+    const val NO_COOKIE = "X-BiliListen-NoCookie"
+
+    /**
      * B 站的音频/图片 CDN 域名一直在扩，除了 *.bilivideo.com 还有
      * mcdn.bilivideo.cn、upos-*.solseed.cn、akamaized 等，全部要当作 B 站域处理。
      */
@@ -38,13 +45,14 @@ object Net {
         .addInterceptor { chain ->
             val original = chain.request()
             val host = original.url.host
-            val builder = original.newBuilder()
+            val noCookie = original.header(NO_COOKIE) == "1"
+            val builder = original.newBuilder().removeHeader(NO_COOKIE)
             if (isBiliHost(host)) {
                 builder.header("User-Agent", UA)
                 builder.header("Referer", REFERER)
                 builder.header("Origin", "https://www.bilibili.com")
                 val cookie = Prefs.cookie
-                if (cookie.isNotEmpty()) builder.header("Cookie", cookie)
+                if (!noCookie && cookie.isNotEmpty()) builder.header("Cookie", cookie)
             } else if (original.header("User-Agent") == null) {
                 builder.header(
                     "User-Agent",
