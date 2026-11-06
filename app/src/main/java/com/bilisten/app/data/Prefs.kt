@@ -18,6 +18,15 @@ object Prefs {
         get() = sp.getString("cookie", "").orEmpty()
         set(value) = sp.edit().putString("cookie", value).apply()
 
+    /** B 站设备指纹（扫码登录的 Cookie 里没有，缺了会被风控 412），首次请求时自动补 */
+    var buvid3: String
+        get() = sp.getString("buvid3", "").orEmpty()
+        set(value) = sp.edit().putString("buvid3", value).apply()
+
+    var buvid4: String
+        get() = sp.getString("buvid4", "").orEmpty()
+        set(value) = sp.edit().putString("buvid4", value).apply()
+
     var mid: Long
         get() = sp.getLong("mid", 0L)
         set(value) = sp.edit().putLong("mid", value).apply()

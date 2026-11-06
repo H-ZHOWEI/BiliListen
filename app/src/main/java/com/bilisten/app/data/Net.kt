@@ -3,6 +3,7 @@ package com.bilisten.app.data
 import android.os.Build
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -36,6 +37,54 @@ object Net {
     fun isBiliHost(host: String): Boolean =
         BILI_HOSTS.any { host.contains(it, ignoreCase = true) }
 
+    /**
+     * buvid3 是 B 站的设备指纹：扫码登录拿到的 Cookie 只有 SESSDATA/bili_jct，
+     * 缺 buvid3 的登录请求会被风控直接回 412 HTML 页（表现为"返回不是合法 JSON"）。
+     * 这里保证每个 B 站请求的 Cookie 里都带 buvid3：优先官方 finger/spi 换取真实值，
+     * 拿不到就本地生成（B 站接受 UUID 格式的 buvid3）。
+     */
+    @Volatile
+    private var buvidCache: String? = null
+
+    private fun ensureBuvid3(): String {
+        buvidCache?.let { return it }
+        synchronized(this) {
+            buvidCache?.let { return it }
+            Prefs.buvid3.takeIf { it.isNotEmpty() }?.let {
+                buvidCache = it
+                return it
+            }
+            try {
+                val body = get("https://api.bilibili.com/x/frontend/finger/spi", mapOf(NO_COOKIE to "1"))
+                val b3 = Regex("\"b_3\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+                if (!b3.isNullOrBlank()) {
+                    val b4 = Regex("\"b_4\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1).orEmpty()
+                    Prefs.buvid3 = b3
+                    if (b4.isNotEmpty()) Prefs.buvid4 = b4
+                    buvidCache = b3
+                    return b3
+                }
+            } catch (_: Exception) {
+                // spi 拉不到就本地生成，别挡住正常请求
+            }
+            val gen = UUID.randomUUID().toString() + "infoc"
+            Prefs.buvid3 = gen
+            buvidCache = gen
+            return gen
+        }
+    }
+
+    /** 组装请求 Cookie：登录态 + 必要的 buvid3 指纹 */
+    private fun buildCookie(noCookie: Boolean): String? {
+        if (noCookie) return null
+        var cookie = Prefs.cookie
+        if (!cookie.contains("buvid3=")) {
+            val buvid = ensureBuvid3()
+            cookie = if (cookie.isEmpty()) "buvid3=$buvid" else "$cookie; buvid3=$buvid"
+        }
+        return cookie.ifEmpty { null }
+    }
+
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -51,8 +100,7 @@ object Net {
                 builder.header("User-Agent", UA)
                 builder.header("Referer", REFERER)
                 builder.header("Origin", "https://www.bilibili.com")
-                val cookie = Prefs.cookie
-                if (!noCookie && cookie.isNotEmpty()) builder.header("Cookie", cookie)
+                if (!noCookie) buildCookie(false)?.let { builder.header("Cookie", it) }
             } else if (original.header("User-Agent") == null) {
                 builder.header(
                     "User-Agent",

@@ -76,8 +76,18 @@ object BiliRepository {
 
     suspend fun fetchFavPage(mediaId: Long, page: Int): FavPage = withContext(Dispatchers.IO) {
         val url = "$FAV_LIST?media_id=$mediaId&pn=$page&ps=20&keyword=&order=mtime&type=0&tid=0&platform=web"
-        val resp = parse<FavPage>(Net.get(url))
-            ?: throw IllegalStateException("收藏夹内容解析失败（返回不是合法 JSON）")
+        // 风控偶发，重试一次能救回大部分请求
+        val resp = (1..2).firstNotNullOfOrNull { attempt ->
+            try {
+                parse<FavPage>(Net.get(url))
+            } catch (e: Exception) {
+                if (attempt == 2) throw e
+                kotlinx.coroutines.delay(800)
+                null
+            }
+        } ?: throw IllegalStateException(
+            "B 站返回了网页而非数据（风控拦截），请稍等片刻后下拉重试"
+        )
         when {
             resp.code == 0 -> resp.data ?: FavPage()
             resp.code == -101 -> throw IllegalStateException("登录状态已失效，请重新登录")
