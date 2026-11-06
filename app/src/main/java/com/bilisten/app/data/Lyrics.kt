@@ -18,6 +18,22 @@ data class LyricResult(
 }
 
 /**
+ * 「手打歌词」用的底稿候选：手打前先挑一个最接近的现成版本，
+ * 在它的基础上改文字/时间轴，省去从零敲一遍。
+ * [lrc] 只有 B 站字幕会预先带上（本来就在内存里），其它源选中后再用
+ * [LyricsRepository.fetchCandidateLrc] 拉取。
+ */
+data class LyricCandidate(
+    val source: String,
+    val id: String,
+    val title: String,
+    val artist: String = "",
+    val durationMs: Long = 0L,
+    val similarity: Double = 0.0,
+    val lrc: String = ""
+)
+
+/**
  * 歌词来源（按优先级）：
  * 1) B 站字幕：UP 主上传的 CC 字幕或 AI 字幕 —— 时间轴和视频完全对齐
  * 2) 网易云音乐：翻唱视频在 B 站没有字幕时，用清洗出的原曲歌名搜索网易云，
@@ -128,6 +144,138 @@ object LyricsRepository {
             if (!result.isEmpty) synchronized(cache) { cache[key] = result }
             result
         }
+
+    // ---------------- 手打歌词：多版本底稿搜索 ----------------
+
+    /**
+     * 给「手打歌词」找底稿：把这首歌在各个源里的**多个版本**都列出来，
+     * 由用户挑最接近的那一版，再在它上面改字/改时间轴。
+     *
+     * 和 [load] 的区别：这里**不**做歌名/时长硬过滤（同一个视频可能用的是翻唱、
+     * 加速版、remix，只有用户自己知道哪版最像），只按相近度排序，最多 20 条。
+     */
+    suspend fun searchCandidates(track: Track, queryOverride: String? = null): List<LyricCandidate> =
+        withContext(Dispatchers.IO) {
+            val q = queryOverride?.takeIf { it.isNotBlank() } ?: track.searchKeyword
+            val out = ArrayList<LyricCandidate>()
+
+            // B 站字幕（时间轴和视频天然对齐，最省力，排最前）
+            if (queryOverride.isNullOrBlank()) {
+                try {
+                    val sub = BiliRepository.fetchSubtitle(
+                        track.bvid, track.cid, track.aid,
+                        LyricStore.getChosenSubtitle(track.bvid)
+                    )
+                    if (sub.lines.isNotEmpty()) {
+                        out.add(
+                            LyricCandidate(
+                                source = sub.label.ifBlank { "B站字幕" },
+                                id = "",
+                                title = track.title,
+                                artist = track.artist,
+                                durationMs = track.durationMs,
+                                similarity = 1.0,
+                                lrc = LrcParser.toText(sub.lines)
+                            )
+                        )
+                    }
+                } catch (_: Exception) {
+                }
+            }
+
+            // 网易云
+            try {
+                val url = "https://music.163.com/api/search/get/web?s=" +
+                    URLEncoder.encode(q, "UTF-8") + "&type=1&offset=0&total=true&limit=10"
+                val json = Net.get(url, mapOf("Referer" to "https://music.163.com/"))
+                gson.fromJson(json, NeSearchResp::class.java)
+                    ?.result?.songs.orEmpty()
+                    .filter { !it.name.isNullOrBlank() }
+                    .forEach { s ->
+                        out.add(
+                            LyricCandidate(
+                                "网易云", s.id.toString(), s.name.orEmpty(),
+                                s.artists?.joinToString("/") { it.name.orEmpty() }.orEmpty(),
+                                s.duration, score(q, s.name, s.duration, track.durationMs)
+                            )
+                        )
+                    }
+            } catch (_: Exception) {
+            }
+
+            // QQ 音乐 / 酷狗
+            try {
+                LyricSources.searchMeta(q).forEach {
+                    out.add(
+                        LyricCandidate(
+                            it.source, it.id, it.name, it.artist.orEmpty(), it.durationMs,
+                            score(q, it.name, it.durationMs, track.durationMs)
+                        )
+                    )
+                }
+            } catch (_: Exception) {
+            }
+
+            // LRCLIB（搜索结果本身就带歌词，直接预填，省一次请求）
+            try {
+                searchLrclib(q).take(6).forEach { item ->
+                    val dur = (item.duration * 1000).toLong()
+                    out.add(
+                        LyricCandidate(
+                            "LRCLIB", item.id.toString(), item.trackName.orEmpty(),
+                            item.artistName.orEmpty(), dur,
+                            score(q, item.trackName, dur, track.durationMs),
+                            item.syncedLyrics.orEmpty()
+                        )
+                    )
+                }
+            } catch (_: Exception) {
+            }
+
+            // 去重（同名同艺人同时长算同一版），按相近度排序
+            val seen = HashSet<String>()
+            out.filter { c ->
+                val key = "${c.title.lowercase()}|${c.artist.lowercase()}|${c.durationMs / 1000}"
+                seen.add(key)
+            }.sortedWith(
+                compareByDescending<LyricCandidate> { it.similarity }
+                    .thenBy { c ->
+                        if (c.durationMs > 0 && track.durationMs > 0)
+                            Math.abs(c.durationMs - track.durationMs) else Long.MAX_VALUE / 2
+                    }
+            ).take(20)
+        }
+
+    /** 相近度 = 歌名重合 60% + 时长接近 40%（时长缺失时给中间值） */
+    private fun score(query: String, name: String?, durMs: Long, videoMs: Long): Double {
+        val ns = nameSimilarity(query, name.orEmpty())
+        val ds = if (durMs > 0 && videoMs > 0) {
+            (1.0 - Math.abs(durMs - videoMs) / 60_000.0).coerceIn(0.0, 1.0)
+        } else 0.5
+        return ns * 0.6 + ds * 0.4
+    }
+
+    /** 拉取某个候选版本的 LRC 原文（B 站字幕直接就绪，其它源按需请求） */
+    suspend fun fetchCandidateLrc(c: LyricCandidate): String = withContext(Dispatchers.IO) {
+        if (c.lrc.isNotBlank()) return@withContext c.lrc
+        try {
+            when (c.source) {
+                "网易云" -> {
+                    val json = Net.get(
+                        "https://music.163.com/api/song/lyric?id=${c.id}&lv=-1&kv=-1&tv=-1",
+                        mapOf("Referer" to "https://music.163.com/")
+                    )
+                    gson.fromJson(json, NeLyricResp::class.java)?.lrc?.lyric.orEmpty()
+                }
+                "LRCLIB" -> searchLrclib("${c.title} ${c.artist}".trim())
+                    .firstOrNull { it.id.toString() == c.id }
+                    ?.syncedLyrics.orEmpty()
+                else -> LyricSources.lyricText(c.source, c.id, c.title, c.durationMs).orEmpty()
+            }
+        } catch (_: Exception) {
+            ""
+        }
+    }
 
     // ---------------- 网易云 ----------------
 
@@ -305,5 +453,22 @@ object LrcParser {
             }
         }
         return lines.sortedBy { it.timeMs }
+    }
+
+    /** 反向：把歌词行还原成 LRC 文本（「手打歌词」的底稿预填用） */
+    fun toText(lines: List<LyricLine>): String = buildString {
+        lines.sortedBy { it.timeMs }.forEach { line ->
+            val ms = line.timeMs.coerceAtLeast(0)
+            val total = ms / 1000
+            append('[')
+            append(String.format("%02d", total / 60))
+            append(':')
+            append(String.format("%02d", total % 60))
+            append('.')
+            append(String.format("%02d", (ms % 1000) / 10))
+            append(']')
+            append(line.text)
+            append('\n')
+        }
     }
 }

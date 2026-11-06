@@ -28,7 +28,9 @@ import coil.load
 import com.bilisten.app.R
 import com.bilisten.app.data.BiliRepository
 import com.bilisten.app.data.Downloads
+import com.bilisten.app.data.LyricCandidate
 import com.bilisten.app.data.LyricStore
+import com.bilisten.app.data.LyricsRepository
 import com.bilisten.app.data.PageStore
 import com.bilisten.app.data.PlaylistStore
 import com.bilisten.app.data.Prefs
@@ -447,7 +449,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         popup.menu.add(0, 6, 5, "校准歌词（从这里开始）")
         popup.menu.add(0, 12, 6, "歌词整体微调（偏移 + 速度）")
-        popup.menu.add(0, 7, 7, "手打歌词")
+        popup.menu.add(0, 7, 7, "手打歌词（可先选个版本当底稿）")
         if (LyricStore.getCustomLrc(track.bvid).isNullOrBlank().not()) {
             popup.menu.add(0, 8, 8, "清除我的歌词")
         }
@@ -707,10 +709,135 @@ class PlayerActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 手打歌词：支持时间戳行，也支持整段无时间戳按行均分 */
-    private fun showManualLyricDialog(track: Track) {
+    /**
+     * 手打歌词第一步：先把这首歌在各个源里的**其它版本**列出来，
+     * 用户挑一个最接近的当底稿，在它的基础上改字/改时间，省去从头敲一遍。
+     */
+    private fun showManualLyricDialog(track: Track, queryOverride: String? = null) {
+        val loading = AlertDialog.Builder(this)
+            .setTitle(if (queryOverride.isNullOrBlank()) "正在找可用的歌词版本" else "正在搜索「$queryOverride」")
+            .setMessage("正在 B站字幕 / 网易云 / QQ音乐 / 酷狗 / LRCLIB 里翻这首歌的各个版本…")
+            .setCancelable(true)
+            .create()
+        loading.show()
+
+        lifecycleScope.launch {
+            val cands = try {
+                LyricsRepository.searchCandidates(track, queryOverride)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            if (isFinishing || isDestroyed) return@launch
+            loading.dismiss()
+
+            val existing = LyricStore.getCustomLrc(track.bvid)
+            val labels = ArrayList<String>()
+            val actions = ArrayList<() -> Unit>()
+
+            labels.add("空白手打（从零开始）")
+            actions.add { openLyricEditor(track, "", "我的歌词") }
+
+            if (!existing.isNullOrBlank()) {
+                val lines = existing.split("\n").count { it.isNotBlank() }
+                labels.add("当前我的歌词（$lines 行，接着改）")
+                actions.add {
+                    openLyricEditor(
+                        track, existing,
+                        LyricStore.getCustomSource(track.bvid) ?: "我的歌词"
+                    )
+                }
+            }
+
+            cands.forEach { c ->
+                val sim = (c.similarity * 100).roundToInt()
+                val artist = c.artist.takeIf { it.isNotBlank() } ?: "未知艺人"
+                val dur = if (c.durationMs > 0) Fmt.duration(c.durationMs) else "--:--"
+                labels.add("${c.title} — $artist · $dur · ${c.source} · $sim%")
+                actions.add {
+                    loadCandidateThenEdit(track, c)
+                }
+            }
+
+            if (cands.isEmpty()) {
+                Toast.makeText(
+                    this@PlayerActivity,
+                    "没搜到其它版本，可空白手打，或用「换个关键词」自己搜",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+
+            AlertDialog.Builder(this@PlayerActivity)
+                .setTitle(
+                    if (cands.isEmpty()) "直接手打歌词"
+                    else "选个底稿再改（找到 ${cands.size} 个版本）"
+                )
+                .setSingleChoiceItems(labels.toTypedArray(), -1) { d, which ->
+                    d.dismiss()
+                    actions.getOrNull(which)?.invoke()
+                }
+                .setNeutralButton("换个关键词") { _, _ -> askKeywordThenSearch(track) }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+    }
+
+    /** 用户自己输入歌名/关键词，重新翻一遍版本（搜不到想要的版本时用） */
+    private fun askKeywordThenSearch(track: Track) {
         val input = EditText(this).apply {
-            setText(LyricStore.getCustomLrc(track.bvid).orEmpty())
+            hint = "原唱歌名 / 动画名 或 歌手名"
+            setText(TitleParser.guessSongTitle(track.rawTitle).ifBlank { track.searchKeyword })
+            setSelection(text.length)
+            setPadding(56, 36, 56, 36)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("换个关键词搜版本")
+            .setView(FrameLayout(this).apply { addView(input) })
+            .setPositiveButton("搜索") { _, _ ->
+                val kw = input.text.toString().trim()
+                if (kw.isEmpty()) {
+                    Toast.makeText(this, "关键词为空", Toast.LENGTH_SHORT).show()
+                } else {
+                    showManualLyricDialog(track, kw)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 选中某个版本后拉它的 LRC 原文，再打开编辑器 */
+    private fun loadCandidateThenEdit(track: Track, c: LyricCandidate) {
+        val loading = AlertDialog.Builder(this)
+            .setTitle("正在读取歌词")
+            .setMessage("${c.title} · ${c.source}")
+            .setCancelable(false)
+            .create()
+        loading.show()
+
+        lifecycleScope.launch {
+            val lrc = try {
+                LyricsRepository.fetchCandidateLrc(c)
+            } catch (e: Exception) {
+                ""
+            }
+            if (isFinishing || isDestroyed) return@launch
+            loading.dismiss()
+            if (lrc.isBlank()) {
+                Toast.makeText(
+                    this@PlayerActivity,
+                    "这个版本没有可用歌词（可能是纯音乐版），换一个试试",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            val label = "${c.source} · ${c.artist.ifBlank { c.title }}"
+            openLyricEditor(track, lrc, label)
+        }
+    }
+
+    /** 手打歌词编辑器：支持带时间戳（[00:12.34] 或 00:12），也支持整段无时间戳按行均分 */
+    private fun openLyricEditor(track: Track, prefill: String, sourceLabel: String) {
+        val input = EditText(this).apply {
+            setText(prefill)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             gravity = Gravity.TOP or Gravity.START
             minHeight = (resources.displayMetrics.heightPixels * 0.4).toInt()
@@ -719,11 +846,11 @@ class PlayerActivity : AppCompatActivity() {
         }
         val container = FrameLayout(this).apply { addView(input) }
         AlertDialog.Builder(this)
-            .setTitle("手打歌词")
+            .setTitle("修改歌词（底稿：$sourceLabel）")
             .setMessage(
-                "每行一句歌词。可以带时间戳（如 [00:12.34]歌词 或 00:12 歌词），\n" +
-                    "也可以不带（按行数均分整首歌的时间轴）。\n" +
-                    "保存后永久生效，并同步显示到车机通知。"
+                "每行一句。带时间戳（如 [00:12.34]歌词 或 00:12 歌词）会按该时间显示；\n" +
+                    "全部不带时间戳时按行数均分整首歌。\n" +
+                    "保存后永久生效，车机通知同步使用这份歌词。"
             )
             .setView(container)
             .setPositiveButton("保存") { _, _ ->
@@ -731,9 +858,23 @@ class PlayerActivity : AppCompatActivity() {
                 if (text.isEmpty()) {
                     Toast.makeText(this, "内容为空，未保存", Toast.LENGTH_SHORT).show()
                 } else {
-                    LyricStore.setCustomLrc(track.bvid, text, "我的歌词")
+                    LyricStore.setCustomLrc(track.bvid, text, sourceLabel)
                     LyricEngine.load(track, null)
-                    Toast.makeText(this, "已保存我的歌词", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "已保存，当前正在使用这份歌词", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNeutralButton("换底稿") { _, _ ->
+                if (input.text.toString().isNotBlank() &&
+                    input.text.toString() != prefill
+                ) {
+                    AlertDialog.Builder(this)
+                        .setTitle("放弃当前修改？")
+                        .setMessage("换底稿会丢掉这次没保存的修改。")
+                        .setPositiveButton("换底稿") { _, _ -> showManualLyricDialog(track) }
+                        .setNegativeButton("继续编辑", null)
+                        .show()
+                } else {
+                    showManualLyricDialog(track)
                 }
             }
             .setNegativeButton("取消", null)

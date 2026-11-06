@@ -84,35 +84,45 @@ object LyricSources {
         @SerializedName("name") var name: String? = null
     }
 
-    private suspend fun fromQq(track: Track, query: String): Rated? {
+    private suspend fun qqSearch(query: String): List<SourceSong> {
         val searchUrl = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp" +
             "?w=${enc(query)}&format=json&n=8&cr=1"
         val json = Net.get(
             searchUrl,
             mapOf("Referer" to "https://y.qq.com/", "User-Agent" to Net.UA)
         )
-        val songs = gson.fromJson(json, QqSearchResp::class.java)
+        return gson.fromJson(json, QqSearchResp::class.java)
             ?.data?.song?.list.orEmpty()
             .filter { !it.songmid.isNullOrBlank() }
-            .map { SourceSong(it.songmid.orEmpty(), it.songname.orEmpty(),
-                it.singer.firstOrNull()?.name, it.interval * 1000L) }
+            .map {
+                SourceSong(
+                    it.songmid.orEmpty(), it.songname.orEmpty(),
+                    it.singer.firstOrNull()?.name, it.interval * 1000L
+                )
+            }
+    }
 
-        for (song in songs) {
+    private suspend fun qqLyric(songmid: String): String? {
+        val lyricUrl = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg" +
+            "?songmid=$songmid&g_tk=5381&format=json&nobase64=0"
+        val body = Net.get(
+            lyricUrl,
+            mapOf("Referer" to "https://c.y.qq.com/", "User-Agent" to Net.UA)
+        )
+        // 返回可能是 jsonp：MusicJsonCallback({...})
+        val jsonPart = body
+            .removePrefix("MusicJsonCallback(")
+            .removeSuffix(")")
+            .trim()
+        val obj = JsonParser.parseString(jsonPart).asJsonObject
+        val b64 = obj.get("lyric")?.asString ?: return null
+        return String(Base64.getDecoder().decode(b64), Charsets.UTF_8)
+    }
+
+    private suspend fun fromQq(track: Track, query: String): Rated? {
+        for (song in qqSearch(query)) {
             if (!accepted(track, song, query)) continue
-            val lyricUrl = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg" +
-                "?songmid=${song.id}&g_tk=5381&format=json&nobase64=0"
-            val body = Net.get(
-                lyricUrl,
-                mapOf("Referer" to "https://c.y.qq.com/", "User-Agent" to Net.UA)
-            )
-            // 返回可能是 jsonp：MusicJsonCallback({...})
-            val jsonPart = body
-                .removePrefix("MusicJsonCallback(")
-                .removeSuffix(")")
-                .trim()
-            val obj = JsonParser.parseString(jsonPart).asJsonObject
-            val b64 = obj.get("lyric")?.asString ?: continue
-            val lrc = String(Base64.getDecoder().decode(b64), Charsets.UTF_8)
+            val lrc = qqLyric(song.id) ?: continue
             val lines = parseLrc(lrc)
             if (lines.size >= 3) return Rated(lines, song)
         }
@@ -150,33 +160,93 @@ object LyricSources {
         @SerializedName("content") var content: String? = null
     }
 
-    private suspend fun fromKugou(track: Track, query: String): Rated? {
+    private suspend fun kugouSearch(query: String): List<SourceSong> {
         // https 证书域名不匹配，走 http（manifest 已允许 cleartext）
         val searchUrl = "http://mobilecdn.kugou.com/api/v3/search/song" +
             "?format=json&keyword=${enc(query)}&page=1&pagesize=8"
         val json = Net.get(searchUrl, mapOf("User-Agent" to Net.UA))
-        val songs = gson.fromJson(json, KgSearchResp::class.java)
+        return gson.fromJson(json, KgSearchResp::class.java)
             ?.data?.info.orEmpty()
             .filter { !it.hash.isNullOrBlank() }
-            .map { SourceSong(it.hash.orEmpty(), it.songname.orEmpty(),
-                it.singername, it.duration * 1000L) }
+            .map {
+                SourceSong(
+                    it.hash.orEmpty(), it.songname.orEmpty(),
+                    it.singername, it.duration * 1000L
+                )
+            }
+    }
 
-        for (song in songs) {
+    private suspend fun kugouLyric(hash: String, keyword: String, durationMs: Long): String? {
+        val findUrl = "http://krcs.kugou.com/search?ver=1&man=yes&client=mobi" +
+            "&keyword=${enc(keyword)}&hash=$hash&duration=$durationMs"
+        val findJson = Net.get(findUrl, mapOf("User-Agent" to Net.UA))
+        val cand = gson.fromJson(findJson, KgLyricCandidates::class.java)
+            ?.candidates?.firstOrNull() ?: return null
+
+        val dlUrl = "http://lyrics.kugou.com/download?ver=1&client=pc" +
+            "&id=${cand.id}&accesskey=${cand.accesskey}&fmt=lrc&charset=utf8"
+        val dlJson = Net.get(dlUrl, mapOf("User-Agent" to Net.UA))
+        val b64 = gson.fromJson(dlJson, KgDownload::class.java)?.content ?: return null
+        return String(Base64.getDecoder().decode(b64), Charsets.UTF_8)
+    }
+
+    private suspend fun fromKugou(track: Track, query: String): Rated? {
+        for (song in kugouSearch(query)) {
             if (!accepted(track, song, query)) continue
-            val findUrl = "http://krcs.kugou.com/search?ver=1&man=yes&client=mobi" +
-                "&keyword=${enc(query)}&hash=${song.id}&duration=${track.durationMs}"
-            val findJson = Net.get(findUrl, mapOf("User-Agent" to Net.UA))
-            val cand = gson.fromJson(findJson, KgLyricCandidates::class.java)
-                ?.candidates?.firstOrNull() ?: continue
-
-            val dlUrl = "http://lyrics.kugou.com/download?ver=1&client=pc" +
-                "&id=${cand.id}&accesskey=${cand.accesskey}&fmt=lrc&charset=utf8"
-            val dlJson = Net.get(dlUrl, mapOf("User-Agent" to Net.UA))
-            val b64 = gson.fromJson(dlJson, KgDownload::class.java)?.content ?: continue
-            val lrc = String(Base64.getDecoder().decode(b64), Charsets.UTF_8)
+            val lrc = kugouLyric(song.id, query, track.durationMs) ?: continue
             val lines = parseLrc(lrc)
             if (lines.size >= 3) return Rated(lines, song)
         }
         return null
+    }
+
+    // ---------------- 「手打歌词」用：多版本候选 ----------------
+
+    data class CandidateMeta(
+        val source: String,
+        val id: String,
+        val name: String,
+        val artist: String?,
+        val durationMs: Long,
+        val lrc: String? = null
+    )
+
+    /**
+     * 只搜元信息（不拉歌词），列表能秒出；用户选中某个版本后再用 [lyricText] 拉它的 LRC。
+     * 这里**不做**歌名/时长过滤 —— 手打歌词就是让用户自己挑最接近的版本。
+     */
+    suspend fun searchMeta(query: String, limit: Int = 6): List<CandidateMeta> =
+        withContext(Dispatchers.IO) {
+            val out = ArrayList<CandidateMeta>()
+            try {
+                qqSearch(query).take(limit).forEach {
+                    out.add(CandidateMeta("QQ音乐", it.id, it.name, it.artist, it.durationMs))
+                }
+            } catch (_: Exception) {
+            }
+            try {
+                kugouSearch(query).take(limit).forEach {
+                    out.add(CandidateMeta("酷狗", it.id, it.name, it.artist, it.durationMs))
+                }
+            } catch (_: Exception) {
+            }
+            out
+        }
+
+    suspend fun lyricText(
+        source: String,
+        id: String,
+        title: String,
+        durationMs: Long
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            when (source) {
+                "QQ音乐" -> qqLyric(id)
+                "酷狗" -> kugouLyric(id, title, durationMs)
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 }
