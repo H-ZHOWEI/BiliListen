@@ -12,6 +12,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
+import android.widget.Toast
 import com.bilisten.app.R
 import com.bilisten.app.data.Prefs
 import com.bilisten.app.player.LyricEngine
@@ -39,6 +40,11 @@ class LyricOverlayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 用户在悬浮窗上点过 ×（或已在 App 里关掉）时不要再挂上来
+        if (!Prefs.lyricOverlayOn) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (view == null) showOverlay()
         return START_STICKY
     }
@@ -79,13 +85,31 @@ class LyricOverlayService : Service() {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params!!.x = initX + (event.rawX - startX).toInt()
-                    params!!.y = initY + (event.rawY - startY).toInt()
+                    val sx = resources.displayMetrics.widthPixels
+                    val sy = resources.displayMetrics.heightPixels
+                    val w = v.width.takeIf { it > 0 } ?: 0
+                    val h = v.height.takeIf { it > 0 } ?: 0
+                    params!!.x = (initX + (event.rawX - startX).toInt())
+                        .coerceIn(0, (sx - w).coerceAtLeast(0))
+                    params!!.y = (initY + (event.rawY - startY).toInt())
+                        .coerceIn(0, (sy - h).coerceAtLeast(0))
                     wm.updateViewLayout(v, params)
                     true
                 }
                 else -> false
             }
+        }
+
+        // 就地关闭：点 × 直接收起悬浮窗（同时把偏好关掉，和播放页菜单保持一致）
+        v.findViewById<View>(R.id.lyric_close).setOnClickListener {
+            Prefs.lyricOverlayOn = false
+            Toast.makeText(
+                this,
+                "已关闭悬浮歌词，想再打开可在播放页「⋮」里开启",
+                Toast.LENGTH_SHORT
+            ).show()
+            removeOverlay()
+            stopSelf()
         }
 
         wm.addView(v, params)
@@ -120,11 +144,20 @@ class LyricOverlayService : Service() {
         }
     }
 
-    override fun onDestroy() {
-        scope.cancel()
-        view?.let { wm?.removeView(it) }
+    /** 摘掉悬浮窗（可能已被移除，重复调用安全） */
+    private fun removeOverlay() {
+        val v = view ?: return
+        try {
+            wm?.removeView(v)
+        } catch (_: Exception) {
+        }
         view = null
         params = null
+    }
+
+    override fun onDestroy() {
+        scope.cancel()
+        removeOverlay()
         super.onDestroy()
     }
 }

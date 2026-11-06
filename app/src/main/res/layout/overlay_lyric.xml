@@ -47,4 +47,16 @@
             android:text="下一句"
             android:visibility="gone" />
     </LinearLayout>
+
+    <!-- 就地关闭：不用再回 App 里开关 -->
+    <ImageView
+        android:id="@+id/lyric_close"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_marginStart="8dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="关闭悬浮歌词"
+        android:padding="7dp"
+        android:alpha="0.66"
+        android:src="@drawable/ic_close" />
 </LinearLayout>
