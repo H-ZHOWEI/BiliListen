@@ -1,5 +1,6 @@
 package com.bilisten.app.ui
 
+import android.app.Dialog
 import android.content.Intent
 import android.media.AudioManager
 import android.net.Uri
@@ -63,6 +64,63 @@ class PlayerActivity : AppCompatActivity() {
     private var currentTrack: Track? = null
 
     private val screenHandler = Handler(Looper.getMainLooper())
+    private val adjustHandler = Handler(Looper.getMainLooper())
+    private var adjustDepth = 0
+    private var resumeAfterAdjust = false
+    private var pendingResume: Runnable? = null
+
+    /**
+     * 调整歌词时先暂停，防止边播边改时间轴导致歌词乱跳；
+     * 所有调整对话框关掉后自动恢复播放，方便立刻试听有没有调准。
+     * depth 计数 + 延迟恢复是为了兼容「换底稿 / 换个关键词」这种
+     * 先 dismiss 旧框再开新框的嵌套场景，中间不会闪一下声音。
+     */
+    private fun beginLyricAdjust() {
+        pendingResume?.let { adjustHandler.removeCallbacks(it) }
+        pendingResume = null
+        if (adjustDepth == 0 && !resumeAfterAdjust) {
+            // 嵌套对话框（菜单→校准框）接续时 resumeAfterAdjust 仍为 true，
+            // 此时播放器已被我们暂停，不能重新取样，否则会记成「本来就没播」
+            resumeAfterAdjust = PlayerController.controller?.isPlaying == true
+            if (resumeAfterAdjust) PlayerController.controller?.pause()
+        }
+        adjustDepth++
+    }
+
+    private fun endLyricAdjust() {
+        adjustDepth = (adjustDepth - 1).coerceAtLeast(0)
+        if (adjustDepth > 0) return
+        val r = Runnable {
+            pendingResume = null
+            if (adjustDepth == 0) {
+                if (resumeAfterAdjust) {
+                    val c = PlayerController.controller
+                    if (c != null) {
+                        if (c.playbackState == androidx.media3.common.Player.STATE_IDLE) c.prepare()
+                        c.play()
+                    }
+                }
+                resumeAfterAdjust = false
+            }
+        }
+        pendingResume = r
+        adjustHandler.postDelayed(r, 250L)
+    }
+
+    /** 挂在歌词相关对话框上；这些对话框没有自定义 dismiss 回调 */
+    private fun <D : Dialog> D.holdPlayback(): D {
+        setOnDismissListener { endLyricAdjust() }
+        beginLyricAdjust()
+        return this
+    }
+
+    /** Builder 直接弹出的歌词对话框统一走这里 */
+    private fun AlertDialog.Builder.showWhileAdjusting(): AlertDialog {
+        val d = create()
+        d.holdPlayback()
+        d.show()
+        return d
+    }
 
     private val overlayPermLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -456,6 +514,7 @@ class PlayerActivity : AppCompatActivity() {
         dialog.window?.setSoftInputMode(
             WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         )
+        dialog.holdPlayback()
         dialog.show()
     }
 
@@ -486,7 +545,7 @@ class PlayerActivity : AppCompatActivity() {
     private data class MenuSection(val title: String, val actions: List<MenuAction>)
 
     /** 分类菜单：分组标题 + 每行右侧状态说明，替代原来一长条平铺的 ⋮ 菜单 */
-    private fun showGroupedMenu(title: String, sections: List<MenuSection>) {
+    private fun showGroupedMenu(title: String, sections: List<MenuSection>): AlertDialog {
         lateinit var dialog: AlertDialog
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -535,6 +594,7 @@ class PlayerActivity : AppCompatActivity() {
             .setNegativeButton("关闭", null)
             .create()
         dialog.show()
+        return dialog
     }
 
     /** 右上角 ⋮：只放非歌词的设置，按类别分组 */
@@ -627,8 +687,11 @@ class PlayerActivity : AppCompatActivity() {
                     )
                 ),
                 MenuSection(
-                    "歌词校准（车机与手机互不影响）",
+                    "歌词校准（调整时自动暂停，关掉后继续播放试听）",
                     listOf(
+                        MenuAction("当前歌词应该在哪？", "选此刻真正在唱的那一句") {
+                            showAlignLyricDialog(track)
+                        },
                         MenuAction("从这里开始校准", calibHint) { showCalibrateDialog(track) },
                         MenuAction("整体微调（偏移 + 速度）", "精确到 0.01 秒") {
                             showFineTuneDialog(track)
@@ -663,7 +726,7 @@ class PlayerActivity : AppCompatActivity() {
                     )
                 )
             )
-        )
+        ).holdPlayback()
     }
 
     /** 改动歌词「源」后必须清缓存再重载，否则会读回内存里的旧歌词 */
@@ -682,6 +745,7 @@ class PlayerActivity : AppCompatActivity() {
             .setNegativeButton("取消") { _, _ -> cancelled = true }
             .create()
         loading.setOnCancelListener { cancelled = true }
+        loading.holdPlayback()
         loading.show()
 
         lifecycleScope.launch {
@@ -789,10 +853,10 @@ class PlayerActivity : AppCompatActivity() {
                             if (kw.isNotEmpty()) showLyricVersionDialog(track, kw)
                         }
                         .setNegativeButton("取消", null)
-                        .show()
+                        .showWhileAdjusting()
                 }
                 .setNegativeButton("取消", null)
-                .show()
+                .showWhileAdjusting()
         }
     }
 
@@ -1000,6 +1064,70 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     /**
+     * 「当前歌词应该在哪？」：暂停后把整首歌词列出来，用户点此刻真正在唱的那一句，
+     * 直接把该句校准到当前播放位置，不用自己试「提前 / 延后多少毫秒」。
+     * 例：屏幕显示「一只没有眼睛」，实际唱的是第一个「两只老虎」→ 选第一个「两只老虎」。
+     */
+    private fun showAlignLyricDialog(track: Track, target: LyricTarget = LyricTarget.PHONE) {
+        val pos = PlayerController.positionMs.value
+        val lines = LyricEngine.linesFor(target)
+        if (lines.isEmpty()) {
+            Toast.makeText(this, "这首歌还没有可用歌词，先加载歌词再校准", Toast.LENGTH_LONG).show()
+            return
+        }
+        val nowIdx = LyricEngine.indexFor(target, pos)
+        val who = if (target == LyricTarget.CAR) "车机" else "手机"
+        val labels = lines.mapIndexed { i, l ->
+            val mark = if (i == nowIdx) "▶ 现在显示 · " else "${i + 1}. "
+            "$mark${Fmt.duration(l.timeMs)}  ${l.text}"
+        }.toTypedArray()
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("当前应该唱到哪一句？\n已暂停在 ${Fmt.duration(pos)} · $who · 选完自动继续播放")
+            .setSingleChoiceItems(labels, nowIdx) { d, which ->
+                val chosen = lines[which]
+                val delta = pos - chosen.timeMs
+                if (kotlin.math.abs(delta) < 20L) {
+                    Toast.makeText(this, "这句已经对齐当前时间，无需调整", Toast.LENGTH_SHORT).show()
+                } else {
+                    LyricStore.shiftCalibration(track.bvid, delta, target)
+                    LyricEngine.recalibrate(track.bvid)
+                    // 分段校准的生效边界会跟着时间轴移动，可能留一点残差，再补一次
+                    val after = LyricEngine.linesFor(target)
+                    if (which < after.size && after[which].text == chosen.text) {
+                        val residual = pos - after[which].timeMs
+                        if (kotlin.math.abs(residual) > 30L) {
+                            LyricStore.shiftCalibration(track.bvid, residual, target)
+                            LyricEngine.recalibrate(track.bvid)
+                        }
+                    }
+                    Toast.makeText(
+                        this,
+                        "已把「${chosen.text.take(14)}」对齐到 ${Fmt.duration(pos)}，" +
+                            "$who 歌词整体${if (delta > 0) "延后" else "提前"} " +
+                            "${String.format("%.2f", kotlin.math.abs(delta) / 1000.0)} 秒，继续播放试试",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                d.dismiss()
+            }
+            .setNeutralButton(if (target == LyricTarget.PHONE) "改调车机" else "改调手机") { _, _ ->
+                showAlignLyricDialog(
+                    track,
+                    if (target == LyricTarget.PHONE) LyricTarget.CAR else LyricTarget.PHONE
+                )
+            }
+            .setNegativeButton("取消（继续播放）", null)
+            .create()
+        dialog.setOnShowListener {
+            // 自动滚到现在显示的句子附近，往回找前几句很省力
+            dialog.listView?.setSelection((nowIdx - 3).coerceAtLeast(0))
+        }
+        dialog.holdPlayback()
+        dialog.show()
+    }
+
+    /**
      * 从当前播放位置开始校准：手机 / 车机分开保存，最小 0.05 秒，
      * 同一位置反复调整自动叠加（调 0.5 再调 0.1 = 0.6），并即时生效。
      */
@@ -1067,7 +1195,7 @@ class PlayerActivity : AppCompatActivity() {
                 } else applyOffset(ms)
             }
             .setNegativeButton("完成", null)
-            .show()
+            .showWhileAdjusting()
     }
 
     /**
@@ -1092,7 +1220,7 @@ class PlayerActivity : AppCompatActivity() {
         val sliderOffset = Slider(this).apply {
             valueFrom = -5000f
             valueTo = 5000f
-            stepSize = 10f
+            stepSize = 1f
         }
         val tvRate = TextView(this).apply { textSize = 13f }
         val sliderRate = Slider(this).apply {
@@ -1110,8 +1238,15 @@ class PlayerActivity : AppCompatActivity() {
 
         fun loadTargetValues() {
             val t = radio.selectedTarget()
-            sliderOffset.value = (LyricStore.getCalibOffset(track.bvid, t) / 10L * 10L)
-                .toFloat().coerceIn(-5000f, 5000f)
+            // 「当前歌词应该在哪」一次可能平移几十秒，滑杆范围要跟着扩展，
+            // 否则在这里一点「应用」就把已保存的大偏移裁回 ±5 秒。
+            val off = LyricStore.getCalibOffset(track.bvid, t)
+            val lo = minOf(-5000L, off - 1000L)
+            val hi = maxOf(5000L, off + 1000L)
+            sliderOffset.value = 0f
+            sliderOffset.valueFrom = lo.toFloat()
+            sliderOffset.valueTo = hi.toFloat()
+            sliderOffset.value = off.toFloat().coerceIn(lo.toFloat(), hi.toFloat())
             sliderRate.value = ((LyricStore.getCalibRate(track.bvid, t) - 1.0) * 1000.0)
                 .roundToInt().coerceIn(-100, 100).toFloat()
             refreshLabels()
@@ -1162,7 +1297,7 @@ class PlayerActivity : AppCompatActivity() {
             .setPositiveButton("应用") { _, _ -> apply(false) }
             .setNeutralButton("重置该设备") { _, _ -> apply(true) }
             .setNegativeButton("取消", null)
-            .show()
+            .showWhileAdjusting()
     }
 
     /**
@@ -1178,6 +1313,7 @@ class PlayerActivity : AppCompatActivity() {
             .setNegativeButton("取消") { _, _ -> cancelled = true }
             .create()
         loading.setOnCancelListener { cancelled = true }
+        loading.holdPlayback()
         loading.show()
 
         lifecycleScope.launch {
@@ -1246,7 +1382,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 .setNeutralButton("换个关键词") { _, _ -> askKeywordThenSearch(track) }
                 .setNegativeButton("取消", null)
-                .show()
+                .showWhileAdjusting()
         }
     }
 
@@ -1270,7 +1406,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
             .setNegativeButton("取消", null)
-            .show()
+            .showWhileAdjusting()
     }
 
     /** 选中某个版本后拉它的 LRC 原文，再打开编辑器 */
@@ -1280,6 +1416,7 @@ class PlayerActivity : AppCompatActivity() {
             .setMessage("${c.title} · ${c.source}")
             .setCancelable(false)
             .create()
+        loading.holdPlayback()
         loading.show()
 
         lifecycleScope.launch {
@@ -1391,13 +1528,14 @@ class PlayerActivity : AppCompatActivity() {
                     .setMessage("换底稿会丢掉这次没保存的修改。")
                     .setPositiveButton("换底稿") { _, _ -> go() }
                     .setNegativeButton("继续编辑", null)
-                    .show()
+                    .showWhileAdjusting()
             } else go()
             Unit
         }
         btnSave.setOnClickListener { save() }
         btnChange.setOnClickListener { change() }
         btnCancel.setOnClickListener { dialog.dismiss() }
+        dialog.holdPlayback()
         dialog.show()
     }
 
@@ -1445,7 +1583,7 @@ class PlayerActivity : AppCompatActivity() {
                         ).show()
                     }
                     .setNegativeButton("取消", null)
-                    .show()
+                    .showWhileAdjusting()
             }
         }
     }

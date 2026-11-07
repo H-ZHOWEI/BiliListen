@@ -120,6 +120,14 @@ object LyricEngine {
         compute(PlayerController.positionMs.value, lines.value, carLines.value)
     }
 
+    /** 给「当前歌词应该在哪」用：取指定设备当前生效的时间轴 */
+    fun linesFor(target: LyricTarget): List<LyricLine> =
+        if (target == LyricTarget.CAR) carLines.value else lines.value
+
+    /** 指定设备此刻正显示到第几句（-1 = 还没开始） */
+    fun indexFor(target: LyricTarget, posMs: Long = PlayerController.positionMs.value): Int =
+        indexAt(linesFor(target), posMs)
+
     private fun compute(
         pos: Long,
         ls: List<LyricLine>,

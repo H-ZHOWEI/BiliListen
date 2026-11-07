@@ -176,6 +176,16 @@ object LyricStore {
         }
     }
 
+    /**
+     * 「当前歌词应该在哪」：整条时间轴平移 deltaMs（正=歌词整体延后，负=提前）。
+     * 走整体偏移字段，避免和分段校准的绝对值语义打架；同一设备多次对齐自动累加。
+     */
+    fun shiftCalibration(bvid: String, deltaMs: Long, target: LyricTarget) {
+        if (deltaMs == 0L) return
+        val rate = getCalibRate(bvid, target)
+        setCalibration(bvid, getCalibOffset(bvid, target) + deltaMs, rate, target)
+    }
+
     // ---------------- 分段校准（按设备分开） ----------------
 
     /**
