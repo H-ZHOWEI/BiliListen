@@ -59,6 +59,10 @@ object LyricSources {
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
+    /** 找版本/拉歌词统一走短超时客户端，单个源卡住不会拖死整个候选列表 */
+    private fun fastGet(url: String, headers: Map<String, String> = emptyMap()): String =
+        Net.get(url, headers, Net.fastHttp)
+
     // ---------------- QQ 音乐 ----------------
 
     private class QqSearchResp {
@@ -87,7 +91,7 @@ object LyricSources {
     private suspend fun qqSearch(query: String): List<SourceSong> {
         val searchUrl = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp" +
             "?w=${enc(query)}&format=json&n=8&cr=1"
-        val json = Net.get(
+        val json = fastGet(
             searchUrl,
             mapOf("Referer" to "https://y.qq.com/", "User-Agent" to Net.UA)
         )
@@ -105,7 +109,7 @@ object LyricSources {
     private suspend fun qqLyric(songmid: String): String? {
         val lyricUrl = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg" +
             "?songmid=$songmid&g_tk=5381&format=json&nobase64=0"
-        val body = Net.get(
+        val body = fastGet(
             lyricUrl,
             mapOf("Referer" to "https://c.y.qq.com/", "User-Agent" to Net.UA)
         )
@@ -164,7 +168,7 @@ object LyricSources {
         // https 证书域名不匹配，走 http（manifest 已允许 cleartext）
         val searchUrl = "http://mobilecdn.kugou.com/api/v3/search/song" +
             "?format=json&keyword=${enc(query)}&page=1&pagesize=8"
-        val json = Net.get(searchUrl, mapOf("User-Agent" to Net.UA))
+        val json = fastGet(searchUrl, mapOf("User-Agent" to Net.UA))
         return gson.fromJson(json, KgSearchResp::class.java)
             ?.data?.info.orEmpty()
             .filter { !it.hash.isNullOrBlank() }
@@ -179,13 +183,13 @@ object LyricSources {
     private suspend fun kugouLyric(hash: String, keyword: String, durationMs: Long): String? {
         val findUrl = "http://krcs.kugou.com/search?ver=1&man=yes&client=mobi" +
             "&keyword=${enc(keyword)}&hash=$hash&duration=$durationMs"
-        val findJson = Net.get(findUrl, mapOf("User-Agent" to Net.UA))
+        val findJson = fastGet(findUrl, mapOf("User-Agent" to Net.UA))
         val cand = gson.fromJson(findJson, KgLyricCandidates::class.java)
             ?.candidates?.firstOrNull() ?: return null
 
         val dlUrl = "http://lyrics.kugou.com/download?ver=1&client=pc" +
             "&id=${cand.id}&accesskey=${cand.accesskey}&fmt=lrc&charset=utf8"
-        val dlJson = Net.get(dlUrl, mapOf("User-Agent" to Net.UA))
+        val dlJson = fastGet(dlUrl, mapOf("User-Agent" to Net.UA))
         val b64 = gson.fromJson(dlJson, KgDownload::class.java)?.content ?: return null
         return String(Base64.getDecoder().decode(b64), Charsets.UTF_8)
     }

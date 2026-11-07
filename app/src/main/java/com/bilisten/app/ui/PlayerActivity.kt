@@ -423,6 +423,11 @@ class PlayerActivity : AppCompatActivity() {
         LyricEngine.load(track, keyword)
     }
 
+    /**
+     * 「换个关键词找歌词」：以前只是偷偷重载一次歌词，网络没命中就什么反馈都没有，
+     * 用户以为点了没反应。现在输完关键词会把各来源的版本列出来让用户挑，
+     * 也保留「直接自动匹配」这个原来的行为。
+     */
     private fun showLyricSearchDialog() {
         val track = currentTrack ?: return
         val input = EditText(this).apply {
@@ -433,15 +438,25 @@ class PlayerActivity : AppCompatActivity() {
             setSelection(text.length)
         }
         val container = FrameLayout(this).apply { addView(input) }
-        AlertDialog.Builder(this)
-            .setTitle("搜索歌词")
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("换个关键词找歌词")
             .setView(container)
-            .setPositiveButton("搜索") { _, _ ->
+            .setPositiveButton("列出版本") { _, _ ->
+                val kw = input.text.toString().trim()
+                if (kw.isNotEmpty()) showLyricVersionDialog(track, kw)
+                else Toast.makeText(this, "关键词为空", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("直接自动匹配") { _, _ ->
                 val kw = input.text.toString().trim()
                 if (kw.isNotEmpty()) loadLyrics(track, kw)
+                else Toast.makeText(this, "关键词为空", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("取消", null)
-            .show()
+            .create()
+        dialog.window?.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
+        dialog.show()
     }
 
     private fun showQualityDialog() {
@@ -600,7 +615,7 @@ class PlayerActivity : AppCompatActivity() {
                         MenuAction("选择歌词版本（记住这首）", chosen ?: "自动匹配") {
                             showLyricVersionDialog(track)
                         },
-                        MenuAction("搜索歌词（换个关键词）") { showLyricSearchDialog() },
+                        MenuAction("换个关键词找歌词（可选版本）") { showLyricSearchDialog() },
                         MenuAction("重新加载歌词", LyricEngine.source.value) {
                             handleMenuAction(2, track)
                         },
@@ -659,11 +674,14 @@ class PlayerActivity : AppCompatActivity() {
 
     /** 从多个来源里挑一个歌词版本，按歌记住，下次播放仍用这一版 */
     private fun showLyricVersionDialog(track: Track, queryOverride: String? = null) {
+        var cancelled = false
         val loading = AlertDialog.Builder(this)
             .setTitle("正在找可用的歌词版本")
-            .setMessage("正在 B站字幕 / 网易云 / QQ音乐 / 酷狗 / LRCLIB 里翻…")
+            .setMessage("正在 B站字幕 / 网易云 / QQ音乐 / 酷狗 / LRCLIB 里翻…（最多约 10 秒）")
             .setCancelable(true)
+            .setNegativeButton("取消") { _, _ -> cancelled = true }
             .create()
+        loading.setOnCancelListener { cancelled = true }
         loading.show()
 
         lifecycleScope.launch {
@@ -674,6 +692,7 @@ class PlayerActivity : AppCompatActivity() {
             }
             if (isFinishing || isDestroyed) return@launch
             loading.dismiss()
+            if (cancelled) return@launch
 
             val chosen = LyricStore.getChosenLabel(track.bvid)
             val labels = ArrayList<String>()
@@ -684,6 +703,27 @@ class PlayerActivity : AppCompatActivity() {
                 reloadLyrics(track)
                 Toast.makeText(this@PlayerActivity, "已恢复自动匹配歌词", Toast.LENGTH_SHORT).show()
             }
+
+            // 不依赖网络的保底：当前正在显示的歌词永远能直接沿用。
+            // 以前几个歌词源全被网络挡住时，列表只剩「自动匹配」一项，
+            // 看起来就像「点了没有可以选的内容」。
+            val currentLines = LyricEngine.lines.value
+            if (currentLines.isNotEmpty()) {
+                labels.add("当前显示的歌词（${currentLines.size} 行 · 直接记住这版）")
+                actions.add {
+                    LyricStore.setChosenVersion(
+                        track.bvid, "当前歌词", LrcParser.toText(currentLines)
+                    )
+                    reloadLyrics(track)
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        if (hasCustomLrc(track)) "已记住；但手打歌词优先级更高，需先清除它"
+                        else "已记住当前这份歌词",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+
             cands.forEach { c ->
                 val sim = (c.similarity * 100).roundToInt()
                 val artist = c.artist.takeIf { it.isNotBlank() } ?: "未知艺人"
@@ -720,15 +760,16 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
             if (cands.isEmpty()) {
-                Toast.makeText(this@PlayerActivity, "没搜到其它版本，可试试「换个关键词」", Toast.LENGTH_LONG).show()
+                Toast.makeText(
+                    this@PlayerActivity,
+                    "网络上暂时没搜到其它版本（可能被网络挡住），仍可选「当前显示的歌词」或换个关键词",
+                    Toast.LENGTH_LONG
+                ).show()
             }
 
+            // 不加 setMessage：说明文字会把单选列表挤到看不见，标题里已带当前状态
             AlertDialog.Builder(this@PlayerActivity)
                 .setTitle("选择歌词版本（当前：${chosen ?: "自动匹配"}）")
-                .setMessage(
-                    "选中的版本会被记住，以后每次播这首歌都用它。\n" +
-                        if (hasCustomLrc(track)) "注意：手打歌词优先级更高，先清除它才能切换版本。" else ""
-                )
                 .setSingleChoiceItems(labels.toTypedArray(), -1) { d, which ->
                     d.dismiss()
                     actions.getOrNull(which)?.invoke()
@@ -1129,11 +1170,14 @@ class PlayerActivity : AppCompatActivity() {
      * 用户挑一个最接近的当底稿，在它的基础上改字/改时间，省去从头敲一遍。
      */
     private fun showManualLyricDialog(track: Track, queryOverride: String? = null) {
+        var cancelled = false
         val loading = AlertDialog.Builder(this)
             .setTitle(if (queryOverride.isNullOrBlank()) "正在找可用的歌词版本" else "正在搜索「$queryOverride」")
-            .setMessage("正在 B站字幕 / 网易云 / QQ音乐 / 酷狗 / LRCLIB 里翻这首歌的各个版本…")
+            .setMessage("正在 B站字幕 / 网易云 / QQ音乐 / 酷狗 / LRCLIB 里翻…（最多约 10 秒）")
             .setCancelable(true)
+            .setNegativeButton("取消") { _, _ -> cancelled = true }
             .create()
+        loading.setOnCancelListener { cancelled = true }
         loading.show()
 
         lifecycleScope.launch {
@@ -1144,6 +1188,7 @@ class PlayerActivity : AppCompatActivity() {
             }
             if (isFinishing || isDestroyed) return@launch
             loading.dismiss()
+            if (cancelled) return@launch
 
             val existing = LyricStore.getCustomLrc(track.bvid)
             val labels = ArrayList<String>()
@@ -1163,6 +1208,15 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
 
+            // 网络全不通时也要有能用的底稿：当前正在显示的歌词直接拿来改
+            val currentLines = LyricEngine.lines.value
+            if (currentLines.isNotEmpty()) {
+                labels.add("当前显示的歌词（${currentLines.size} 行，拿来改）")
+                actions.add {
+                    openLyricEditor(track, LrcParser.toText(currentLines), "当前歌词")
+                }
+            }
+
             cands.forEach { c ->
                 val sim = (c.similarity * 100).roundToInt()
                 val artist = c.artist.takeIf { it.isNotBlank() } ?: "未知艺人"
@@ -1176,7 +1230,7 @@ class PlayerActivity : AppCompatActivity() {
             if (cands.isEmpty()) {
                 Toast.makeText(
                     this@PlayerActivity,
-                    "没搜到其它版本，可空白手打，或用「换个关键词」自己搜",
+                    "网络上暂时没搜到其它版本（可能被网络挡住），仍可选「当前显示的歌词」当底稿，或换个关键词",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -1249,63 +1303,101 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    /** 手打歌词编辑器：保存后立即重新加载（清缓存），所见即所得 */
+    /**
+     * 手打歌词编辑器。
+     * 「保存并应用」以前放在 AlertDialog 的系统按钮栏里，软键盘一弹出就被顶到屏幕外，
+     * 用户点不到。现在把三个按钮做成内容区顶部的固定工具条，键盘怎么弹都在。
+     */
     private fun openLyricEditor(track: Track, prefill: String, sourceLabel: String) {
         val input = EditText(this).apply {
             setText(prefill)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             gravity = Gravity.TOP or Gravity.START
-            minHeight = (resources.displayMetrics.heightPixels * 0.35).toInt()
-            setPadding(48, 28, 48, 28)
+            minHeight = (resources.displayMetrics.heightPixels * 0.24).toInt()
+            setPadding(40, 24, 40, 24)
             setSelection(text.length)
         }
-        val container = FrameLayout(this).apply {
-            addView(input, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ))
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("编辑歌词（底稿：$sourceLabel）")
-            .setMessage(
-                "每行一句。带时间戳（如 [00:12.34]歌词 或 00:12 歌词）按时间显示；\n" +
-                    "全不带时间戳时按行数均分整首歌。\n" +
-                    "点「保存并应用」后立刻生效并永久记住。"
-            )
-            .setView(ScrollView(this).apply { addView(container) })
-            .setPositiveButton("保存并应用", null)
-            .setNeutralButton("换底稿", null)
-            .setNegativeButton("取消", null)
-            .create()
 
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val text = input.text.toString().trim()
-                if (text.isEmpty()) {
-                    Toast.makeText(this, "内容为空，未保存（可继续编辑）", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
+        val btnSave = android.widget.Button(this).apply {
+            text = "保存并应用"
+            backgroundTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this@PlayerActivity, R.color.bili_pink)
+            )
+            setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.bg))
+        }
+        val btnChange = android.widget.Button(this).apply { text = "换底稿" }
+        val btnCancel = android.widget.Button(this).apply { text = "取消" }
+        listOf(btnChange, btnCancel).forEach {
+            it.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this@PlayerActivity, R.color.surface_high)
+            )
+            it.setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg))
+        }
+        val tools = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(20, 12, 20, 12)
+            addView(btnSave, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.6f))
+            addView(btnChange, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(btnCancel, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f))
+        }
+        val tip = TextView(this).apply {
+            text = "每行一句；带 [00:12.34] 时间戳按时间显示，不带则按行数均分整首歌。\n" +
+                "底稿：$sourceLabel · 改完点上方「保存并应用」立刻生效并永久记住。"
+            textSize = 11f
+            setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg_dim))
+            setPadding(24, 8, 24, 8)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(tools)
+            addView(tip)
+            addView(
+                ScrollView(this@PlayerActivity).apply { addView(input) },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("编辑歌词")
+            .setView(box)
+            .setCancelable(true)
+            .create()
+        // 打开时先不弹键盘；点到输入框后键盘弹出、窗口随之缩放，顶部工具条始终可见
+        dialog.window?.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
+        )
+
+        val save: () -> Unit = {
+            val text = input.text.toString().trim()
+            if (text.isEmpty()) {
+                Toast.makeText(this, "内容为空，未保存（可继续编辑）", Toast.LENGTH_SHORT).show()
+            } else {
                 LyricStore.setCustomLrc(track.bvid, text, sourceLabel)
                 reloadLyrics(track)
                 Toast.makeText(this, "已保存并应用，当前正在使用这份歌词", Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-                val changed = input.text.toString() != prefill
-                val go = {
-                    dialog.dismiss()
-                    showManualLyricDialog(track)
-                }
-                if (changed) {
-                    AlertDialog.Builder(this)
-                        .setTitle("放弃当前修改？")
-                        .setMessage("换底稿会丢掉这次没保存的修改。")
-                        .setPositiveButton("换底稿") { _, _ -> go() }
-                        .setNegativeButton("继续编辑", null)
-                        .show()
-                } else go()
-            }
         }
+        val change: () -> Unit = {
+            val go = { dialog.dismiss(); showManualLyricDialog(track) }
+            if (input.text.toString() != prefill) {
+                AlertDialog.Builder(this)
+                    .setTitle("放弃当前修改？")
+                    .setMessage("换底稿会丢掉这次没保存的修改。")
+                    .setPositiveButton("换底稿") { _, _ -> go() }
+                    .setNegativeButton("继续编辑", null)
+                    .show()
+            } else go()
+            Unit
+        }
+        btnSave.setOnClickListener { save() }
+        btnChange.setOnClickListener { change() }
+        btnCancel.setOnClickListener { dialog.dismiss() }
         dialog.show()
     }
 

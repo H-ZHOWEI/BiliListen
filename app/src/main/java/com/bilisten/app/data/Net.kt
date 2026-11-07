@@ -111,10 +111,26 @@ object Net {
         }
         .build()
 
-    fun get(url: String, extraHeaders: Map<String, String> = emptyMap()): String {
+    /**
+     * 搜索歌词版本专用：在 [http] 基础上把超时缩短（拦截器、Cookie、Referer 全部保留）。
+     * 找候选版本时要连着问好几个源，某个源卡住 30 秒会让整个列表看起来「点了没反应」。
+     */
+    val fastHttp: OkHttpClient by lazy {
+        http.newBuilder()
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /** [client] 可指定 [fastHttp] 等短超时客户端；默认仍是常规 30s 客户端 */
+    fun get(
+        url: String,
+        extraHeaders: Map<String, String> = emptyMap(),
+        client: OkHttpClient = http
+    ): String {
         val builder = Request.Builder().url(url).get()
         for ((k, v) in extraHeaders) builder.header(k, v)
-        http.newCall(builder.build()).execute().use { resp ->
+        client.newCall(builder.build()).execute().use { resp ->
             val body = resp.body?.string().orEmpty()
             if (!resp.isSuccessful && body.isEmpty()) {
                 throw IllegalStateException("HTTP ${resp.code}")

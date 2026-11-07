@@ -4,7 +4,11 @@ import com.bilisten.app.util.TitleParser
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.net.URLEncoder
 
 data class LyricLine(val timeMs: Long, val text: String)
@@ -143,80 +147,19 @@ object LyricsRepository {
     suspend fun searchCandidates(track: Track, queryOverride: String? = null): List<LyricCandidate> =
         withContext(Dispatchers.IO) {
             val q = queryOverride?.takeIf { it.isNotBlank() } ?: track.searchKeyword
-            val out = ArrayList<LyricCandidate>()
 
-            // B 站字幕（时间轴和视频天然对齐，最省力，排最前）
-            if (queryOverride.isNullOrBlank()) {
-                try {
-                    val sub = BiliRepository.fetchSubtitle(
-                        track.bvid, track.cid, track.aid,
-                        LyricStore.getChosenSubtitle(track.bvid)
-                    )
-                    if (sub.lines.isNotEmpty()) {
-                        out.add(
-                            LyricCandidate(
-                                source = sub.label.ifBlank { "B站字幕" },
-                                id = "",
-                                title = track.title,
-                                artist = track.artist,
-                                durationMs = track.durationMs,
-                                similarity = 1.0,
-                                lrc = LrcParser.toText(sub.lines)
-                            )
-                        )
-                    }
-                } catch (_: Exception) {
-                }
+            // 四个来源并行、每个来源单独限时。
+            // 以前是串行问 4 个源，任一源卡住 30 秒，整个列表就跟着卡住，
+            // 用户看到「正在找…」一直不动，以为点了没内容出来。
+            val groups = coroutineScope {
+                listOf(
+                    async { safeSearch { biliCandidate(track, queryOverride) } },
+                    async { safeSearch { neteaseCandidates(q, track.durationMs) } },
+                    async { safeSearch { extendedCandidates(q, track.durationMs) } },
+                    async { safeSearch { lrclibCandidates(q, track.durationMs) } }
+                ).awaitAll()
             }
-
-            // 网易云
-            try {
-                val url = "https://music.163.com/api/search/get/web?s=" +
-                    URLEncoder.encode(q, "UTF-8") + "&type=1&offset=0&total=true&limit=10"
-                val json = Net.get(url, mapOf("Referer" to "https://music.163.com/"))
-                gson.fromJson(json, NeSearchResp::class.java)
-                    ?.result?.songs.orEmpty()
-                    .filter { !it.name.isNullOrBlank() }
-                    .forEach { s ->
-                        out.add(
-                            LyricCandidate(
-                                "网易云", s.id.toString(), s.name.orEmpty(),
-                                s.artists?.joinToString("/") { it.name.orEmpty() }.orEmpty(),
-                                s.duration, score(q, s.name, s.duration, track.durationMs)
-                            )
-                        )
-                    }
-            } catch (_: Exception) {
-            }
-
-            // QQ 音乐 / 酷狗
-            try {
-                LyricSources.searchMeta(q).forEach {
-                    out.add(
-                        LyricCandidate(
-                            it.source, it.id, it.name, it.artist.orEmpty(), it.durationMs,
-                            score(q, it.name, it.durationMs, track.durationMs)
-                        )
-                    )
-                }
-            } catch (_: Exception) {
-            }
-
-            // LRCLIB（搜索结果本身就带歌词，直接预填，省一次请求）
-            try {
-                searchLrclib(q).take(6).forEach { item ->
-                    val dur = (item.duration * 1000).toLong()
-                    out.add(
-                        LyricCandidate(
-                            "LRCLIB", item.id.toString(), item.trackName.orEmpty(),
-                            item.artistName.orEmpty(), dur,
-                            score(q, item.trackName, dur, track.durationMs),
-                            item.syncedLyrics.orEmpty()
-                        )
-                    )
-                }
-            } catch (_: Exception) {
-            }
+            val out = groups.flatten()
 
             // 去重（同名同艺人同时长算同一版），按相近度排序
             val seen = HashSet<String>()
@@ -230,6 +173,72 @@ object LyricsRepository {
                             Math.abs(c.durationMs - track.durationMs) else Long.MAX_VALUE / 2
                     }
             ).take(20)
+        }
+
+    /** 单个来源最多等 10 秒；请求本身走 Net.fastHttp（8 秒读超时），失败不影响其它源 */
+    private suspend fun <T> safeSearch(block: suspend () -> List<T>): List<T> =
+        try {
+            withTimeout(10_000L) { block() }
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+    private suspend fun biliCandidate(
+        track: Track,
+        queryOverride: String?
+    ): List<LyricCandidate> {
+        if (!queryOverride.isNullOrBlank()) return emptyList()
+        val sub = BiliRepository.fetchSubtitle(
+            track.bvid, track.cid, track.aid,
+            LyricStore.getChosenSubtitle(track.bvid)
+        )
+        if (sub.lines.isEmpty()) return emptyList()
+        return listOf(
+            LyricCandidate(
+                source = sub.label.ifBlank { "B站字幕" },
+                id = "",
+                title = track.title,
+                artist = track.artist,
+                durationMs = track.durationMs,
+                similarity = 1.0,
+                lrc = LrcParser.toText(sub.lines)
+            )
+        )
+    }
+
+    private suspend fun neteaseCandidates(q: String, videoMs: Long): List<LyricCandidate> {
+        val url = "https://music.163.com/api/search/get/web?s=" +
+            URLEncoder.encode(q, "UTF-8") + "&type=1&offset=0&total=true&limit=10"
+        val json = Net.get(url, mapOf("Referer" to "https://music.163.com/"), Net.fastHttp)
+        return gson.fromJson(json, NeSearchResp::class.java)
+            ?.result?.songs.orEmpty()
+            .filter { !it.name.isNullOrBlank() }
+            .map { s ->
+                LyricCandidate(
+                    "网易云", s.id.toString(), s.name.orEmpty(),
+                    s.artists?.joinToString("/") { it.name.orEmpty() }.orEmpty(),
+                    s.duration, score(q, s.name, s.duration, videoMs)
+                )
+            }
+    }
+
+    private suspend fun extendedCandidates(q: String, videoMs: Long): List<LyricCandidate> =
+        LyricSources.searchMeta(q).map {
+            LyricCandidate(
+                it.source, it.id, it.name, it.artist.orEmpty(), it.durationMs,
+                score(q, it.name, it.durationMs, videoMs)
+            )
+        }
+
+    private suspend fun lrclibCandidates(q: String, videoMs: Long): List<LyricCandidate> =
+        searchLrclib(q, fast = true).take(6).map { item ->
+            val dur = (item.duration * 1000).toLong()
+            LyricCandidate(
+                "LRCLIB", item.id.toString(), item.trackName.orEmpty(),
+                item.artistName.orEmpty(), dur,
+                score(q, item.trackName, dur, videoMs),
+                item.syncedLyrics.orEmpty()
+            )
         }
 
     /** 相近度 = 歌名重合 60% + 时长接近 40%（时长缺失时给中间值） */
@@ -249,11 +258,12 @@ object LyricsRepository {
                 "网易云" -> {
                     val json = Net.get(
                         "https://music.163.com/api/song/lyric?id=${c.id}&lv=-1&kv=-1&tv=-1",
-                        mapOf("Referer" to "https://music.163.com/")
+                        mapOf("Referer" to "https://music.163.com/"),
+                        Net.fastHttp
                     )
                     gson.fromJson(json, NeLyricResp::class.java)?.lrc?.lyric.orEmpty()
                 }
-                "LRCLIB" -> searchLrclib("${c.title} ${c.artist}".trim())
+                "LRCLIB" -> searchLrclib("${c.title} ${c.artist}".trim(), fast = true)
                     .firstOrNull { it.id.toString() == c.id }
                     ?.syncedLyrics.orEmpty()
                 else -> LyricSources.lyricText(c.source, c.id, c.title, c.durationMs).orEmpty()
@@ -402,10 +412,10 @@ object LyricsRepository {
         return LyricResult(emptyList(), "", keyword)
     }
 
-    private fun searchLrclib(query: String): List<LrclibItem> {
+    private fun searchLrclib(query: String, fast: Boolean = false): List<LrclibItem> {
         return try {
             val url = "https://lrclib.net/api/search?q=${URLEncoder.encode(query, "UTF-8")}"
-            val json = Net.get(url)
+            val json = if (fast) Net.get(url, client = Net.fastHttp) else Net.get(url)
             gson.fromJson(json, object : TypeToken<List<LrclibItem>>() {}.type) ?: emptyList()
         } catch (e: Exception) {
             emptyList()
