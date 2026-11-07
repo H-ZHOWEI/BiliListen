@@ -87,8 +87,8 @@ class MainActivity : AppCompatActivity() {
 
         setupMiniPlayer()
 
-        // 启动时静默检查更新（12 小时最多一次，用户点过「跳过此版本」的不再打扰）
-        checkUpdate(manual = false)
+        // 自动检查更新放在 onResume：那时窗口 token 已就绪，弹窗才显示得出来
+        // （放在 onCreate 里网络回来时 Activity 可能还没 attach 窗口，会将弹窗吞掉）
 
         if (savedInstanceState == null) {
             supportFragmentManager.beginTransaction()
@@ -216,35 +216,57 @@ class MainActivity : AppCompatActivity() {
 
     private var updateDialogShowing = false
 
+    /** 本次使用已弹过提示的版本：切后台回来不反复弹，但杀掉重开（每次运行）会重新提醒 */
+    private var promptedVersion = ""
+
+    /** 防止 onResume 连续触发时并发发起多个检查请求 */
+    private var updateChecking = false
+
     /**
      * @param manual true=用户点「检查更新」，无论有无新版本都给反馈；
-     *               false=启动自动检查，静默失败、12 小时内只查一次、跳过此版本则不弹
+     *               false=打开 App 自动检查，静默失败、只要发现新版本就弹窗
      */
     private fun checkUpdate(manual: Boolean) {
-        val now = System.currentTimeMillis()
-        if (!manual) {
-            if (now - Prefs.updateCheckedAt < 12 * 3600_000L) return
-        }
-        Prefs.updateCheckedAt = now
+        if (isFinishing || isDestroyed) return
+        if (!manual && updateChecking) return
+        if (!manual) updateChecking = true
         lifecycleScope.launch {
-            val info = Updater.checkUpdate(this@MainActivity)
-            if (info == null) {
-                if (manual) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "已是最新版本 v${Updater.currentVersion(this@MainActivity)}",
-                        Toast.LENGTH_SHORT
-                    ).show()
+            try {
+                // 刚启动时网络常常还没连上，Updater 内部会自动换地址重试
+                val info = Updater.checkUpdate(
+                    this@MainActivity,
+                    attempts = if (manual) 1 else 3
+                )
+                if (info == null) {
+                    if (manual) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "已是最新版本 v${Updater.currentVersion(this@MainActivity)}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    // 自动检查失败不记任何冷却时间，下次打开 / 回到前台会再试
+                    return@launch
                 }
-                return@launch
+                if (!manual) {
+                    // 「跳过此版本」仍尊重用户选择，且新版本发布时自动失效
+                    if (Prefs.skippedVersion == info.version) return@launch
+                    if (promptedVersion == info.version) return@launch
+                    if (updateDialogShowing ||
+                        !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                    ) return@launch
+                    promptedVersion = info.version
+                }
+                showUpdateDialog(info)
+            } finally {
+                if (!manual) updateChecking = false
             }
-            if (!manual && Prefs.skippedVersion == info.version) return@launch
-            showUpdateDialog(info)
         }
     }
 
     private fun showUpdateDialog(info: Updater.Info) {
-        if (updateDialogShowing || isFinishing) return
+        if (updateDialogShowing || isFinishing || isDestroyed) return
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         val v = DialogUpdateBinding.inflate(layoutInflater)
         v.tvUpdateVersion.text =
             "新版本 v${info.version}（当前 v${Updater.currentVersion(this)}）"
@@ -338,7 +360,12 @@ class MainActivity : AppCompatActivity() {
         }
         dialog.setOnDismissListener { updateDialogShowing = false }
         updateDialogShowing = true
-        dialog.show()
+        try {
+            dialog.show()
+        } catch (_: Exception) {
+            // 极端情况下窗口已失效：别让自动检查把 App 弄崩，下次 onResume 再试
+            updateDialogShowing = false
+        }
     }
 
     /** 用系统浏览器打开指定网址（下载兜底 / 手动安装用） */
@@ -355,6 +382,14 @@ class MainActivity : AppCompatActivity() {
         if (!Prefs.isLogin) {
             startActivity(Intent(this, LoginActivity::class.java))
             finish()
+            return
+        }
+        // 每次打开 / 回到前台都检查一次：这里窗口 token 已就绪，弹窗一定显示得出来。
+        // 有新版本才弹；同一版本本次使用只弹一次，杀掉 App 重开（每次运行）会再提醒。
+        binding.root.post {
+            if (!isFinishing && !isDestroyed && !updateDialogShowing) {
+                checkUpdate(manual = false)
+            }
         }
     }
 }

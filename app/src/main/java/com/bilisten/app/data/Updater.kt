@@ -9,6 +9,7 @@ import androidx.core.content.FileProvider
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
@@ -23,6 +24,18 @@ object Updater {
 
     private const val API_LATEST = "https://api.github.com/repos/H-ZHOWEI/BiliListen/releases/latest"
     const val PAGE_URL = "https://github.com/H-ZHOWEI/BiliListen/releases/latest"
+
+    /**
+     * 版本检查的候选地址：直连优先，后面是国内可直连的代理。
+     * 刚开机 / 刚点开 App 时网络往往还没就绪，直连偶发超时，多试几个地址能救回来；
+     * 否则启动这一次静默失败，用户就以为「从来不自动提示」。
+     */
+    private val CHECK_URLS = listOf(
+        API_LATEST,
+        "https://ghproxy.net/$API_LATEST",
+        "https://gh-proxy.com/$API_LATEST",
+        "https://gh.api.99988866.xyz/$API_LATEST"
+    )
 
     data class Info(
         val version: String,
@@ -59,34 +72,78 @@ object Updater {
         "0"
     }
 
-    /** 有没有新版本可用；网络异常时返回 null（静默失败，不打扰用户） */
-    suspend fun checkUpdate(context: Context): Info? = withContext(Dispatchers.IO) {
-        try {
-            val raw = Net.get(
-                API_LATEST,
-                mapOf(
-                    "Accept" to "application/vnd.github+json",
-                    "User-Agent" to "BiliListen-Updater"
-                )
-            )
-            val dto = gson.fromJson(raw, ReleaseDto::class.java) ?: return@withContext null
-            val latest = (dto.tagName ?: dto.name ?: "").trim().removePrefix("v").removePrefix("V")
-            if (latest.isBlank()) return@withContext null
-            if (compareVersion(latest, currentVersion(context)) <= 0) return@withContext null
+    /**
+     * 版本检查专用客户端：超时短、失败快。
+     * 以前复用 [Net.http]（读超时 30s），启动瞬间网络没就绪时会一直卡着不返回，
+     * 用户早就进 App 了，弹窗自然「不出现」；手动点检查时网络已就绪所以又能弹。
+     */
+    private val checkClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val b = req.newBuilder()
+                if (req.header("User-Agent") == null) {
+                    b.header("User-Agent", "BiliListen-Updater")
+                }
+                chain.proceed(b.build())
+            }
+            .build()
+    }
 
+    /**
+     * 有没有新版本可用。
+     * - 明确拿到「已是最新」/「有新版但没 APK」→ 返回 null，不再重试；
+     * - 网络异常、被限流、响应不是合法 Release JSON → 换下一个地址重试；
+     * - 全部失败 → 返回 null（自动检查静默，下次打开再试，绝不写死冷却时间）。
+     *
+     * @param attempts 最多尝试次数；启动自动检查给 3 次求稳，手动点「检查更新」给 1 次求快。
+     */
+    suspend fun checkUpdate(context: Context, attempts: Int = 3): Info? = withContext(Dispatchers.IO) {
+        val current = currentVersion(context)
+        val n = attempts.coerceIn(1, CHECK_URLS.size * 2)
+        for (i in 0 until n) {
+            try {
+                return@withContext fetchRelease(CHECK_URLS[i % CHECK_URLS.size], current)
+            } catch (_: Exception) {
+                if (i < n - 1) delay(1000L)
+            }
+        }
+        null
+    }
+
+    /** 请求单个地址并解析：返回 null = 确认无更新；抛异常 = 这次请求不算数，换地址重试 */
+    private fun fetchRelease(url: String, current: String): Info? {
+        val req = okhttp3.Request.Builder()
+            .url(url)
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "BiliListen-Updater")
+            .get()
+            .build()
+        checkClient.newCall(req).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+            if (!body.trimStart().startsWith("{")) throw IllegalStateException("not json")
+            val dto = gson.fromJson(body, ReleaseDto::class.java)
+                ?: throw IllegalStateException("bad json")
+            val latest = (dto.tagName ?: dto.name ?: "").trim().removePrefix("v").removePrefix("V")
+            if (latest.isBlank()) throw IllegalStateException("no tag")
+            if (compareVersion(latest, current) <= 0) return null
             val apk = dto.assets?.firstOrNull {
                 it.name?.endsWith(".apk", ignoreCase = true) == true && !it.url.isNullOrBlank()
-            } ?: return@withContext null
-
-            Info(
+            } ?: return null
+            return Info(
                 version = latest,
                 notes = (dto.body ?: "").trim(),
                 apkUrl = apk.url!!,
                 sizeBytes = apk.size,
                 pageUrl = dto.htmlUrl ?: PAGE_URL
             )
-        } catch (e: Exception) {
-            null
         }
     }
 

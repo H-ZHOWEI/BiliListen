@@ -79,7 +79,7 @@ object Prefs {
         get() = sp.getBoolean("resume_autoplay", false)
         set(value) = sp.edit().putBoolean("resume_autoplay", value).apply()
 
-    /** 上次检查更新的时间戳，用于控制自动检查频率 */
+    /** 上次检查更新的时间戳（仅作记录；v1.14 起不再用它限制自动检查频率） */
     var updateCheckedAt: Long
         get() = sp.getLong("update_checked_at", 0L)
         set(value) = sp.edit().putLong("update_checked_at", value).apply()
