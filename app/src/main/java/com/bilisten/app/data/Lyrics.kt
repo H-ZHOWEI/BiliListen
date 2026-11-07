@@ -59,30 +59,6 @@ object LyricsRepository {
             val key = "${track.bvid}#$keyword#${if (biliOnly) 1 else 0}"
             synchronized(cache) { cache[key] }?.let { return@withContext it }
 
-            val segments = LyricStore.getSegments(track.bvid)
-            val calibOffset = LyricStore.getCalibOffset(track.bvid)
-            val calibRate = LyricStore.getCalibRate(track.bvid)
-            val hasCalib = calibOffset != 0L || Math.abs(calibRate - 1.0) > 0.0001
-
-            /** 依次应用：整体校准（偏移+速度倍率）→ 分段校准（局部平移） */
-            fun finalize(r: LyricResult): LyricResult {
-                var lines = r.lines
-                if (hasCalib) {
-                    lines = lines
-                        .map {
-                            LyricLine(
-                                ((it.timeMs * calibRate).toLong() + calibOffset).coerceAtLeast(0),
-                                it.text
-                            )
-                        }
-                        .sortedBy { it.timeMs }
-                }
-                if (segments.isNotEmpty()) {
-                    lines = LyricStore.applySegments(lines, segments)
-                }
-                return if (lines === r.lines) r else LyricResult(lines, r.source, r.keyword)
-            }
-
             // 0. 用户手打歌词（最高优先级，持久保存）
             if (forceKeyword.isNullOrBlank()) {
                 LyricStore.getCustomLrc(track.bvid)?.let { lrc ->
@@ -97,6 +73,20 @@ object LyricsRepository {
                         return@withContext result
                     }
                 }
+
+                // 0.5 用户从多版本里指定的那一版（按歌记住，下次仍用这版）
+                LyricStore.getChosenLrc(track.bvid)?.let { lrc ->
+                    val lines = LrcParser.parse(lrc)
+                    if (lines.isNotEmpty()) {
+                        val result = LyricResult(
+                            lines,
+                            LyricStore.getChosenLabel(track.bvid) ?: "指定版本",
+                            keyword
+                        )
+                        synchronized(cache) { cache[key] = result }
+                        return@withContext result
+                    }
+                }
             }
 
             // 1. B 站字幕（默认来源）
@@ -104,9 +94,7 @@ object LyricsRepository {
                 val chosen = LyricStore.getChosenSubtitle(track.bvid)
                 val sub = BiliRepository.fetchSubtitle(track.bvid, track.cid, track.aid, chosen)
                 if (sub.lines.isNotEmpty()) {
-                    val result = finalize(
-                        LyricResult(sub.lines, sub.label.ifBlank { "B站字幕" }, keyword)
-                    )
+                    val result = LyricResult(sub.lines, sub.label.ifBlank { "B站字幕" }, keyword)
                     synchronized(cache) { cache[key] = result }
                     return@withContext result
                 }
@@ -124,23 +112,21 @@ object LyricsRepository {
             // 3. 网易云（原曲歌词，翻唱视频的主要来源）
             val ne = fromNetease(track, keyword)
             if (!ne.isEmpty) {
-                val result = finalize(ne)
-                synchronized(cache) { cache[key] = result }
-                return@withContext result
+                synchronized(cache) { cache[key] = ne }
+                return@withContext ne
             }
 
             // 4. 扩展通道：QQ音乐 → 酷狗 → 酷我 → 咪咕
             for (q in neQueries(track, keyword)) {
                 val ext = LyricSources.load(track, q)
                 if (ext != null) {
-                    val result = finalize(ext)
-                    synchronized(cache) { cache[key] = result }
-                    return@withContext result
+                    synchronized(cache) { cache[key] = ext }
+                    return@withContext ext
                 }
             }
 
             // 5. 兜底：LRCLIB
-            val result = finalize(fromLrclib(track, keyword))
+            val result = fromLrclib(track, keyword)
             if (!result.isEmpty) synchronized(cache) { cache[key] = result }
             result
         }

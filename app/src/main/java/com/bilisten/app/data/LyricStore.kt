@@ -4,12 +4,19 @@ import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.JsonSyntaxException
 import java.io.File
+import kotlin.math.abs
+
+/**
+ * 歌词显示目标：手机的播放页/悬浮窗 与 车机通知/AVRCP 是两条独立时间轴。
+ * 车机链路（蓝牙/投屏）通常比手机慢几百毫秒，两边必须能分别校准，互不影响。
+ */
+enum class LyricTarget { PHONE, CAR }
 
 /**
  * 歌词 DIY 仓库（持久化，下次打开依然生效）：
- * 1) customLrc：用户手打 / 粘贴的歌词（优先级最高，车机同样显示）
- * 2) segments：分段时间校准 —— 「歌词从第 x 秒起慢了/快了」，
- *    从当前位置起给后面的歌词整体提前 / 延后若干毫秒，可多次叠加
+ * 1) customLrc：用户手打 / 粘贴的歌词（优先级最高）
+ * 2) chosenLrc：用户从多个版本里指定的歌词（按歌记住，下次播放仍用这一版）
+ * 3) 整体校准（偏移 + 速度倍率）与分段校准：按 [LyricTarget] 分别保存
  */
 object LyricStore {
 
@@ -18,13 +25,20 @@ object LyricStore {
     data class Entry(
         val customLrc: String? = null,
         val customSource: String? = null,
+        /** 用户指定使用的歌词版本（记住选择） */
+        val chosenLrc: String? = null,
+        val chosenLabel: String? = null,
         val segments: List<Segment>? = null,
         /** 用户在「字幕/语音转文字」里指定使用的字幕语言轨（如 zh-CN / ai-zh） */
         val chosenSubtitle: String? = null,
-        /** 整体校准：歌词时间戳统一偏移（毫秒，正=延后显示，负=提前显示） */
+        /** 手机：整体校准偏移（毫秒，正=延后显示，负=提前显示） */
         val calibOffset: Long? = null,
-        /** 整体校准：歌词时间戳统一缩放倍率（>1 显示越来越慢，<1 越来越快） */
-        val calibRate: Double? = null
+        /** 手机：整体校准速度倍率（>1 显示越来越慢，<1 越来越快） */
+        val calibRate: Double? = null,
+        /** 车机：独立的一套校准 */
+        val carSegments: List<Segment>? = null,
+        val carCalibOffset: Long? = null,
+        val carCalibRate: Double? = null
     )
 
     private data class Store(val entries: MutableMap<String, Entry> = LinkedHashMap())
@@ -78,6 +92,13 @@ object LyricStore {
 
     private fun entryOf(bvid: String): Entry = st().entries[bvid] ?: Entry()
 
+    private fun update(bvid: String, block: (Entry) -> Entry) {
+        ensure()
+        val s = st()
+        s.entries[bvid] = block(s.entries[bvid] ?: Entry())
+        save()
+    }
+
     // ---------------- 手打歌词 ----------------
 
     fun getCustomLrc(bvid: String): String? = entryOf(bvid).customLrc
@@ -85,19 +106,25 @@ object LyricStore {
     fun getCustomSource(bvid: String): String? = entryOf(bvid).customSource
 
     fun setCustomLrc(bvid: String, lrc: String, source: String = "我的歌词") {
-        ensure()
-        val s = st()
-        val old = s.entries[bvid] ?: Entry()
-        s.entries[bvid] = old.copy(customLrc = lrc, customSource = source)
-        save()
+        update(bvid) { it.copy(customLrc = lrc, customSource = source) }
     }
 
     fun clearCustomLrc(bvid: String) {
-        ensure()
-        val s = st()
-        val old = s.entries[bvid] ?: return
-        s.entries[bvid] = old.copy(customLrc = null, customSource = null)
-        save()
+        update(bvid) { it.copy(customLrc = null, customSource = null) }
+    }
+
+    // ---------------- 指定歌词版本（按歌记住） ----------------
+
+    fun getChosenLrc(bvid: String): String? = entryOf(bvid).chosenLrc
+
+    fun getChosenLabel(bvid: String): String? = entryOf(bvid).chosenLabel
+
+    fun setChosenVersion(bvid: String, label: String, lrc: String) {
+        update(bvid) { it.copy(chosenLabel = label, chosenLrc = lrc) }
+    }
+
+    fun clearChosenVersion(bvid: String) {
+        update(bvid) { it.copy(chosenLabel = null, chosenLrc = null) }
     }
 
     // ---------------- 指定字幕轨（语音转文字来源） ----------------
@@ -105,70 +132,118 @@ object LyricStore {
     fun getChosenSubtitle(bvid: String): String? = entryOf(bvid).chosenSubtitle
 
     fun setChosenSubtitle(bvid: String, lan: String?) {
-        ensure()
-        val s = st()
-        val old = s.entries[bvid] ?: Entry()
-        s.entries[bvid] = old.copy(chosenSubtitle = lan)
-        save()
+        update(bvid) { it.copy(chosenSubtitle = lan) }
     }
 
-    fun clearChosenSubtitle(bvid: String) {
-        ensure()
-        val s = st()
-        val old = s.entries[bvid] ?: return
-        s.entries[bvid] = old.copy(chosenSubtitle = null)
-        save()
+    // ---------------- 整体校准（偏移 + 速度倍率，按设备分开） ----------------
+
+    fun getCalibOffset(bvid: String, target: LyricTarget = LyricTarget.PHONE): Long {
+        val e = entryOf(bvid)
+        return if (target == LyricTarget.CAR) e.carCalibOffset ?: 0L else e.calibOffset ?: 0L
     }
 
-    // ---------------- 整体校准（偏移 + 速度倍率） ----------------
+    fun getCalibRate(bvid: String, target: LyricTarget = LyricTarget.PHONE): Double {
+        val e = entryOf(bvid)
+        return if (target == LyricTarget.CAR) e.carCalibRate ?: 1.0 else e.calibRate ?: 1.0
+    }
 
-    fun getCalibOffset(bvid: String): Long = entryOf(bvid).calibOffset ?: 0L
+    fun getSegments(bvid: String, target: LyricTarget = LyricTarget.PHONE): List<Segment> {
+        val e = entryOf(bvid)
+        return if (target == LyricTarget.CAR) e.carSegments.orEmpty() else e.segments.orEmpty()
+    }
 
-    fun getCalibRate(bvid: String): Double = entryOf(bvid).calibRate ?: 1.0
+    fun hasCalibration(bvid: String, target: LyricTarget = LyricTarget.PHONE): Boolean {
+        val e = entryOf(bvid)
+        val off = if (target == LyricTarget.CAR) e.carCalibOffset else e.calibOffset
+        val rate = if (target == LyricTarget.CAR) e.carCalibRate else e.calibRate
+        val segs = if (target == LyricTarget.CAR) e.carSegments else e.segments
+        return off != null || rate != null || !segs.isNullOrEmpty()
+    }
 
-    fun hasCalibration(bvid: String): Boolean =
-        entryOf(bvid).calibOffset != null || entryOf(bvid).calibRate != null
-
-    /** 保存整体校准；offset=0 且 rate≈1 时视为重置 */
-    fun setCalibration(bvid: String, offsetMs: Long, rate: Double) {
-        ensure()
-        val s = st()
-        val old = s.entries[bvid] ?: Entry()
-        val entry = if (offsetMs == 0L && Math.abs(rate - 1.0) < 0.0001) {
-            old.copy(calibOffset = null, calibRate = null)
-        } else {
-            old.copy(calibOffset = offsetMs, calibRate = rate)
+    /** 保存整体校准；offset=0 且 rate≈1 时视为重置（只影响所选设备） */
+    fun setCalibration(
+        bvid: String,
+        offsetMs: Long,
+        rate: Double,
+        target: LyricTarget = LyricTarget.PHONE
+    ) {
+        val reset = offsetMs == 0L && abs(rate - 1.0) < 0.0001
+        val off: Long? = if (reset) null else offsetMs
+        val r: Double? = if (reset) null else rate
+        update(bvid) { e ->
+            if (target == LyricTarget.CAR) e.copy(carCalibOffset = off, carCalibRate = r)
+            else e.copy(calibOffset = off, calibRate = r)
         }
-        s.entries[bvid] = entry
-        save()
     }
 
-    // ---------------- 分段校准 ----------------
+    // ---------------- 分段校准（按设备分开） ----------------
 
-    fun getSegments(bvid: String): List<Segment> = entryOf(bvid).segments.orEmpty()
-
-    /** 在 startMs 处加一个校准点：之后（含当前句）的歌词整体平移 offsetMs（负数=提前） */
-    fun addSegment(bvid: String, startMs: Long, offsetMs: Long) {
+    /**
+     * 在 startMs 处加一个校准点：之后（含当前句）的歌词整体平移 offsetMs（负数=提前）。
+     * 同一个位置附近反复调整按「叠加」处理（调 0.5 秒再调 0.1 秒 = 0.6 秒），
+     * 符合用户「一点点修准」的直觉；旧实现是覆盖，会让多次调整互相打架。
+     */
+    fun addSegment(
+        bvid: String,
+        startMs: Long,
+        offsetMs: Long,
+        target: LyricTarget = LyricTarget.PHONE
+    ) {
         if (offsetMs == 0L) return
-        ensure()
-        val s = st()
-        val old = s.entries[bvid] ?: Entry()
-        val merged = (old.segments.orEmpty() + Segment(startMs, offsetMs))
-            .sortedBy { it.start }
-        s.entries[bvid] = old.copy(segments = merged)
-        save()
+        val current = getSegments(bvid, target)
+        val last = current.lastOrNull()
+        val base = last?.offset ?: 0L
+        val merged = if (last != null && abs(last.start - startMs) < 2500) {
+            current.dropLast(1) + Segment(last.start, base + offsetMs)
+        } else {
+            current + Segment(startMs, base + offsetMs)
+        }.filter { it.offset != 0L }.sortedBy { it.start }
+        update(bvid) { e ->
+            if (target == LyricTarget.CAR) e.copy(carSegments = merged.ifEmpty { null })
+            else e.copy(segments = merged.ifEmpty { null })
+        }
     }
 
-    fun clearSegments(bvid: String) {
-        ensure()
-        val s = st()
-        val old = s.entries[bvid] ?: return
-        s.entries[bvid] = old.copy(segments = null)
-        save()
+    fun clearSegments(bvid: String, target: LyricTarget = LyricTarget.PHONE) {
+        update(bvid) { e ->
+            if (target == LyricTarget.CAR) e.copy(carSegments = null) else e.copy(segments = null)
+        }
+    }
+
+    /** 重置这首歌的所有校准（手机 + 车机，整体 + 分段） */
+    fun clearAllCalibration(bvid: String) {
+        update(bvid) {
+            it.copy(
+                calibOffset = null, calibRate = null, segments = null,
+                carCalibOffset = null, carCalibRate = null, carSegments = null
+            )
+        }
     }
 
     /**
-     * 把校准段应用到手打以外的时间轴上：
+     * 把校准应用到原始时间轴：整体缩放/偏移 → 分段平移。
+     * 手机和车机各调用一次，得到两条互不干扰的时间轴。
+     */
+    fun applyCalibration(
+        lines: List<LyricLine>,
+        bvid: String,
+        target: LyricTarget
+    ): List<LyricLine> {
+        if (lines.isEmpty()) return lines
+        val offset = getCalibOffset(bvid, target)
+        val rate = getCalibRate(bvid, target)
+        val hasCalib = offset != 0L || abs(rate - 1.0) > 0.0001
+        var out = if (hasCalib) {
+            lines.map {
+                LyricLine(((it.timeMs * rate).toLong() + offset).coerceAtLeast(0), it.text)
+            }.sortedBy { it.timeMs }
+        } else lines
+        val segs = getSegments(bvid, target)
+        if (segs.isNotEmpty()) out = applySegments(out, segs)
+        return out
+    }
+
+    /**
      * 每行歌词的偏移 = 它前面最近的那个校准点的偏移（绝对偏移，非累计）。
      * 边界往前多含 3 秒，让「当前正在显示的这句慢了」也能被纠正。
      */

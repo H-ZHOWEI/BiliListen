@@ -14,12 +14,15 @@ import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.PopupMenu
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -30,6 +33,8 @@ import com.bilisten.app.data.BiliRepository
 import com.bilisten.app.data.Downloads
 import com.bilisten.app.data.LyricCandidate
 import com.bilisten.app.data.LyricStore
+import com.bilisten.app.data.LyricTarget
+import com.bilisten.app.data.LrcParser
 import com.bilisten.app.data.LyricsRepository
 import com.bilisten.app.data.PageStore
 import com.bilisten.app.data.PlaylistStore
@@ -104,7 +109,7 @@ class PlayerActivity : AppCompatActivity() {
             binding.btnSpeed.text = speedLabel(PlayerController.speed.value)
         }
         binding.btnQuality.setOnClickListener { showQualityDialog() }
-        binding.btnLyric.setOnClickListener { showLyricSearchDialog() }
+        binding.btnLyric.setOnClickListener { currentTrack?.let { showLyricTools(it) } }
         binding.btnSearchLyric.setOnClickListener { showLyricSearchDialog() }
 
         binding.seek.addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
@@ -462,58 +467,299 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private data class MenuAction(val title: String, val hint: String = "", val run: () -> Unit)
+    private data class MenuSection(val title: String, val actions: List<MenuAction>)
+
+    /** 分类菜单：分组标题 + 每行右侧状态说明，替代原来一长条平铺的 ⋮ 菜单 */
+    private fun showGroupedMenu(title: String, sections: List<MenuSection>) {
+        lateinit var dialog: AlertDialog
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 8, 40, 8)
+        }
+        sections.forEach { sec ->
+            box.addView(TextView(this).apply {
+                text = sec.title
+                textSize = 12f
+                setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.bili_pink))
+                setPadding(12, 26, 12, 8)
+            })
+            sec.actions.forEach { act ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(24, 22, 24, 22)
+                    isClickable = true
+                    background = android.graphics.drawable.RippleDrawable(
+                        android.content.res.ColorStateList.valueOf(
+                            android.graphics.Color.argb(40, 251, 114, 153)
+                        ), null, null
+                    )
+                    setOnClickListener { dialog.dismiss(); act.run() }
+                }
+                row.addView(TextView(this).apply {
+                    text = act.title
+                    textSize = 14f
+                    setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg))
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                if (act.hint.isNotEmpty()) {
+                    row.addView(TextView(this).apply {
+                        text = act.hint
+                        textSize = 11f
+                        setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg_dim))
+                        gravity = Gravity.END
+                    })
+                }
+                box.addView(row)
+            }
+        }
+        dialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(ScrollView(this).apply { addView(box) })
+            .setNegativeButton("关闭", null)
+            .create()
+        dialog.show()
+    }
+
+    /** 右上角 ⋮：只放非歌词的设置，按类别分组 */
     private fun showMoreMenu(anchor: View) {
         val track = currentTrack ?: return
         val downloaded = Downloads.isDownloaded(track.bvid)
         val running = Downloads.isRunning(track.bvid)
+        val videoOn = PlayerController.videoMode.value || Prefs.videoBvids.contains(track.bvid)
 
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add(0, 1, 0, "在哔哩哔哩打开视频")
-        popup.menu.add(0, 2, 1, "重新加载歌词")
-        popup.menu.add(
-            0, 3, 2,
-            when {
-                running -> "取消下载"
-                downloaded -> "删除下载"
-                else -> "下载这首（离线听）"
-            }
+        showGroupedMenu(
+            "更多设置",
+            listOf(
+                MenuSection(
+                    "歌词与字幕",
+                    listOf(
+                        MenuAction(
+                            "歌词工具箱", "版本 / 校准 / 手打 / 悬浮"
+                        ) { showLyricTools(track) }
+                    )
+                ),
+                MenuSection(
+                    "画面与显示",
+                    listOf(
+                        MenuAction(
+                            "显示视频画面（记住这首）",
+                            if (videoOn) "已开启" else "默认关闭"
+                        ) { handleMenuAction(5, track) },
+                        MenuAction("屏幕常亮设置", when (Prefs.screenOn) {
+                            1 -> "5 分钟"; 2 -> "10 分钟"; 3 -> "30 分钟"; 4 -> "跟随系统"
+                            else -> "常亮"
+                        }) { handleMenuAction(15, track) }
+                    )
+                ),
+                MenuSection(
+                    "音乐与文件",
+                    listOf(
+                        MenuAction(
+                            when {
+                                running -> "取消下载"
+                                downloaded -> "删除下载"
+                                else -> "下载这首（离线听）"
+                            },
+                            if (downloaded) "已下载" else ""
+                        ) { handleMenuAction(3, track) },
+                        MenuAction("加入我的歌单", "仅本地") { handleMenuAction(14, track) },
+                        MenuAction("选择分P（只保留某个分P）") { handleMenuAction(13, track) },
+                        MenuAction("在哔哩哔哩打开视频") { handleMenuAction(1, track) }
+                    )
+                ),
+                MenuSection(
+                    "播放",
+                    listOf(
+                        MenuAction(
+                            "启动时自动续播上次的歌",
+                            if (Prefs.resumeAutoPlay) "已开启" else "已关闭"
+                        ) { handleMenuAction(17, track) }
+                    )
+                )
+            )
         )
-        popup.menu.add(0, 4, 3, "歌词只使用 B 站字幕").apply {
-            isCheckable = true
-            isChecked = Prefs.lyricBiliOnly
+    }
+
+    /** 播放页底部「歌词」按钮：所有歌词相关功能集中在这里，不再挤在 ⋮ */
+    private fun showLyricTools(track: Track) {
+        val chosen = LyricStore.getChosenLabel(track.bvid)
+        val hasCustom = !LyricStore.getCustomLrc(track.bvid).isNullOrBlank()
+        val calibHint = buildString {
+            if (LyricStore.hasCalibration(track.bvid, LyricTarget.PHONE)) append("手机已调 ")
+            if (LyricStore.hasCalibration(track.bvid, LyricTarget.CAR)) append("车机已调")
+        }.trim().ifBlank { "手机 / 车机分开调" }
+
+        showGroupedMenu(
+            "歌词工具箱",
+            listOf(
+                MenuSection(
+                    "歌词来源",
+                    listOf(
+                        MenuAction("选择歌词版本（记住这首）", chosen ?: "自动匹配") {
+                            showLyricVersionDialog(track)
+                        },
+                        MenuAction("搜索歌词（换个关键词）") { showLyricSearchDialog() },
+                        MenuAction("重新加载歌词", LyricEngine.source.value) {
+                            handleMenuAction(2, track)
+                        },
+                        MenuAction(
+                            "歌词只使用 B 站字幕",
+                            if (Prefs.lyricBiliOnly) "已开启" else "已关闭"
+                        ) { handleMenuAction(4, track) },
+                        MenuAction("字幕 / 语音转文字") { handleMenuAction(11, track) }
+                    )
+                ),
+                MenuSection(
+                    "歌词校准（车机与手机互不影响）",
+                    listOf(
+                        MenuAction("从这里开始校准", calibHint) { showCalibrateDialog(track) },
+                        MenuAction("整体微调（偏移 + 速度）", "精确到 0.01 秒") {
+                            showFineTuneDialog(track)
+                        },
+                        MenuAction("重置全部歌词校准") { handleMenuAction(9, track) }
+                    )
+                ),
+                MenuSection(
+                    "手打歌词",
+                    listOf(
+                        MenuAction("手打歌词（可先选版本当底稿）") { showManualLyricDialog(track) },
+                        MenuAction(
+                            "清除我的歌词",
+                            if (hasCustom) "当前在用" else "无"
+                        ) {
+                            if (hasCustom) handleMenuAction(8, track)
+                            else Toast.makeText(this, "这首歌没有手打歌词", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                ),
+                MenuSection(
+                    "悬浮歌词",
+                    listOf(
+                        MenuAction(
+                            "歌词悬浮窗（置顶显示）",
+                            if (Prefs.lyricOverlayOn) "已开启" else "已关闭"
+                        ) { handleMenuAction(10, track) },
+                        MenuAction(
+                            "悬浮歌词双行（当前句+下一句）",
+                            if (Prefs.lyricOverlayDual) "双行" else "单行"
+                        ) { handleMenuAction(16, track) }
+                    )
+                )
+            )
+        )
+    }
+
+    /** 改动歌词「源」后必须清缓存再重载，否则会读回内存里的旧歌词 */
+    private fun reloadLyrics(track: Track, keyword: String? = null) {
+        LyricsRepository.invalidate(track.bvid)
+        loadLyrics(track, keyword)
+    }
+
+    /** 从多个来源里挑一个歌词版本，按歌记住，下次播放仍用这一版 */
+    private fun showLyricVersionDialog(track: Track, queryOverride: String? = null) {
+        val loading = AlertDialog.Builder(this)
+            .setTitle("正在找可用的歌词版本")
+            .setMessage("正在 B站字幕 / 网易云 / QQ音乐 / 酷狗 / LRCLIB 里翻…")
+            .setCancelable(true)
+            .create()
+        loading.show()
+
+        lifecycleScope.launch {
+            val cands = try {
+                LyricsRepository.searchCandidates(track, queryOverride)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            if (isFinishing || isDestroyed) return@launch
+            loading.dismiss()
+
+            val chosen = LyricStore.getChosenLabel(track.bvid)
+            val labels = ArrayList<String>()
+            val actions = ArrayList<() -> Unit>()
+            labels.add("自动匹配（默认，恢复自动选择）")
+            actions.add {
+                LyricStore.clearChosenVersion(track.bvid)
+                reloadLyrics(track)
+                Toast.makeText(this@PlayerActivity, "已恢复自动匹配歌词", Toast.LENGTH_SHORT).show()
+            }
+            cands.forEach { c ->
+                val sim = (c.similarity * 100).roundToInt()
+                val artist = c.artist.takeIf { it.isNotBlank() } ?: "未知艺人"
+                val dur = if (c.durationMs > 0) Fmt.duration(c.durationMs) else "--:--"
+                labels.add("${c.title} — $artist · $dur · ${c.source} · $sim%")
+                actions.add {
+                    lifecycleScope.launch {
+                        val lrc = try {
+                            LyricsRepository.fetchCandidateLrc(c)
+                        } catch (e: Exception) {
+                            ""
+                        }
+                        if (lrc.isBlank()) {
+                            Toast.makeText(this@PlayerActivity, "这版没有可用歌词，换一个试试", Toast.LENGTH_SHORT).show()
+                            return@launch
+                        }
+                        if (LrcParser.parse(lrc).isEmpty()) {
+                            Toast.makeText(
+                                this@PlayerActivity,
+                                "这版歌词没有时间轴，无法显示（换一个带时间戳的版本）",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            return@launch
+                        }
+                        val label = "${c.source} · ${c.title}"
+                        LyricStore.setChosenVersion(track.bvid, label, lrc)
+                        reloadLyrics(track)
+                        Toast.makeText(
+                            this@PlayerActivity,
+                            "已使用「$label」，以后听到这首都用这版",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+            if (cands.isEmpty()) {
+                Toast.makeText(this@PlayerActivity, "没搜到其它版本，可试试「换个关键词」", Toast.LENGTH_LONG).show()
+            }
+
+            AlertDialog.Builder(this@PlayerActivity)
+                .setTitle("选择歌词版本（当前：${chosen ?: "自动匹配"}）")
+                .setMessage(
+                    "选中的版本会被记住，以后每次播这首歌都用它。\n" +
+                        if (hasCustomLrc(track)) "注意：手打歌词优先级更高，先清除它才能切换版本。" else ""
+                )
+                .setSingleChoiceItems(labels.toTypedArray(), -1) { d, which ->
+                    d.dismiss()
+                    actions.getOrNull(which)?.invoke()
+                }
+                .setNeutralButton("换个关键词") { _, _ ->
+                    val input = EditText(this@PlayerActivity).apply {
+                        hint = "原唱歌名 / 歌手名"
+                        setText(TitleParser.guessSongTitle(track.rawTitle).ifBlank { track.searchKeyword })
+                        setSelection(text.length)
+                        setPadding(56, 36, 56, 36)
+                    }
+                    AlertDialog.Builder(this@PlayerActivity)
+                        .setTitle("换个关键词搜版本")
+                        .setView(FrameLayout(this@PlayerActivity).apply { addView(input) })
+                        .setPositiveButton("搜索") { _, _ ->
+                            val kw = input.text.toString().trim()
+                            if (kw.isNotEmpty()) showLyricVersionDialog(track, kw)
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                }
+                .setNegativeButton("取消", null)
+                .show()
         }
-        popup.menu.add(0, 5, 4, "显示视频画面（记住这首的选择）").apply {
-            isCheckable = true
-            isChecked = PlayerController.videoMode.value ||
-                Prefs.videoBvids.contains(track.bvid)
-        }
-        popup.menu.add(0, 6, 5, "校准歌词（从这里开始）")
-        popup.menu.add(0, 12, 6, "歌词整体微调（偏移 + 速度）")
-        popup.menu.add(0, 7, 7, "手打歌词（可先选个版本当底稿）")
-        if (LyricStore.getCustomLrc(track.bvid).isNullOrBlank().not()) {
-            popup.menu.add(0, 8, 8, "清除我的歌词")
-        }
-        if (LyricStore.getSegments(track.bvid).isNotEmpty() || LyricStore.hasCalibration(track.bvid)) {
-            popup.menu.add(0, 9, 9, "重置全部歌词校准")
-        }
-        popup.menu.add(0, 10, 10, "歌词悬浮窗（置顶显示）").apply {
-            isCheckable = true
-            isChecked = Prefs.lyricOverlayOn
-        }
-        popup.menu.add(0, 16, 11, "悬浮歌词双行（当前句+下一句）").apply {
-            isCheckable = true
-            isChecked = Prefs.lyricOverlayDual
-        }
-        popup.menu.add(0, 11, 12, "字幕 / 语音转文字")
-        popup.menu.add(0, 13, 13, "选择分P（只保留某个分P）")
-        popup.menu.add(0, 14, 14, "加入我的歌单")
-        popup.menu.add(0, 15, 15, "屏幕常亮设置")
-        popup.menu.add(0, 17, 16, "启动时自动续播上次的歌").apply {
-            isCheckable = true
-            isChecked = Prefs.resumeAutoPlay
-        }
-        popup.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
+    }
+
+    private fun hasCustomLrc(track: Track): Boolean =
+        !LyricStore.getCustomLrc(track.bvid).isNullOrBlank()
+
+    private fun handleMenuAction(id: Int, track: Track): Boolean {
+        return when (id) {
                 1 -> {
                     try {
                         startActivity(
@@ -528,7 +774,7 @@ class PlayerActivity : AppCompatActivity() {
                     true
                 }
                 2 -> {
-                    loadLyrics(track, null)
+                    reloadLyrics(track)
                     true
                 }
                 3 -> {
@@ -562,7 +808,7 @@ class PlayerActivity : AppCompatActivity() {
                         if (Prefs.lyricBiliOnly) "歌词只用 B 站字幕" else "已允许网络歌词兜底",
                         Toast.LENGTH_SHORT
                     ).show()
-                    loadLyrics(track, null)
+                    reloadLyrics(track)
                     true
                 }
                 5 -> {
@@ -586,15 +832,14 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 8 -> {
                     LyricStore.clearCustomLrc(track.bvid)
-                    LyricEngine.load(track, null)
+                    reloadLyrics(track)
                     Toast.makeText(this, "已清除我的歌词", Toast.LENGTH_SHORT).show()
                     true
                 }
                 9 -> {
-                    LyricStore.clearSegments(track.bvid)
-                    LyricStore.setCalibration(track.bvid, 0L, 1.0)
-                    LyricEngine.load(track, null)
-                    Toast.makeText(this, "已重置全部校准，恢复原始时间轴", Toast.LENGTH_SHORT).show()
+                    LyricStore.clearAllCalibration(track.bvid)
+                    LyricEngine.recalibrate(track.bvid)
+                    Toast.makeText(this, "已重置手机 + 车机的全部校准", Toast.LENGTH_SHORT).show()
                     true
                 }
                 10 -> {
@@ -642,8 +887,6 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 else -> false
             }
-        }
-        popup.show()
     }
 
     override fun onResume() {
@@ -668,90 +911,215 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    /** 歌词快了/慢了：从当前位置起，给后面的歌词整体提前 / 延后（持久保存） */
+    /** 两个校准目标共用的选择器 */
+    private fun targetRadio(): RadioGroup {
+        val phone = RadioButton(this).apply {
+            text = "手机显示"
+            id = View.generateViewId()
+            isChecked = true
+            setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg))
+        }
+        val car = RadioButton(this).apply {
+            text = "车机显示"
+            id = View.generateViewId()
+            setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg))
+        }
+        return RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            addView(phone)
+            addView(car)
+            setPadding(0, 8, 0, 8)
+        }
+    }
+
+    private fun RadioGroup.selectedTarget(): LyricTarget =
+        if (indexOfChild(findViewById<RadioButton>(checkedRadioButtonId)) == 1) LyricTarget.CAR
+        else LyricTarget.PHONE
+
+    /** 小按钮：校准对话框里反复点也不会关掉对话框，方便一点点修准 */
+    private fun tuneButton(text: String, onClick: () -> Unit): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 12f
+        gravity = Gravity.CENTER
+        setPadding(6, 20, 6, 20)
+        setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg))
+        background = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(
+                android.graphics.Color.argb(40, 251, 114, 153)
+            ), null, null
+        )
+        isClickable = true
+        setOnClickListener { onClick() }
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+    }
+
+    private fun tuneRow(vararg buttons: TextView): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        buttons.forEach { addView(it) }
+    }
+
+    /**
+     * 从当前播放位置开始校准：手机 / 车机分开保存，最小 0.05 秒，
+     * 同一位置反复调整自动叠加（调 0.5 再调 0.1 = 0.6），并即时生效。
+     */
     private fun showCalibrateDialog(track: Track) {
         val pos = PlayerController.positionMs.value
-        val options = arrayOf(
-            "后面歌词提前 0.5 秒", "后面歌词提前 0.1 秒",
-            "后面歌词延后 0.1 秒", "后面歌词延后 0.5 秒"
-        )
-        val offsets = longArrayOf(-500L, -100L, 100L, 500L)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(56, 28, 56, 8)
+        }
+        box.addView(TextView(this).apply {
+            text = "这次调整作用于："
+            textSize = 13f
+            setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg_dim))
+        })
+        val radio = targetRadio()
+        box.addView(radio)
+        box.addView(TextView(this).apply {
+            text = "车机歌词比手机慢 → 选「车机显示」再点「提前」。\n" +
+                "两套参数各自保存，调车机不会影响手机。\n" +
+                "从 ${Fmt.duration(pos)} 起的歌词生效，可反复点叠加。"
+            textSize = 12f
+            setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg_dim))
+            setPadding(0, 12, 0, 16)
+        })
+
+        fun applyOffset(ms: Long) {
+            val target = radio.selectedTarget()
+            LyricStore.addSegment(track.bvid, pos, ms, target)
+            LyricEngine.recalibrate(track.bvid)
+            val who = if (target == LyricTarget.CAR) "车机" else "手机"
+            Toast.makeText(
+                this,
+                "$who 歌词${if (ms < 0) "提前" else "延后"} ${kotlin.math.abs(ms)} 毫秒（已生效）",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        val steps = listOf(-1000L, -500L, -200L, -50L, 50L, 200L, 500L, 1000L)
+        val labels = steps.map { ms ->
+            val v = if (kotlin.math.abs(ms) >= 1000) "${kotlin.math.abs(ms) / 1000} 秒"
+            else "${kotlin.math.abs(ms) / 1000.0} 秒"
+            (if (ms < 0) "提前 " else "延后 ") + v
+        }
+        box.addView(tuneRow(*steps.take(4).mapIndexed { i, ms ->
+            tuneButton(labels[i]) { applyOffset(ms) }
+        }.toTypedArray()))
+        box.addView(tuneRow(*steps.drop(4).mapIndexed { i, ms ->
+            tuneButton(labels[i + 4]) { applyOffset(ms) }
+        }.toTypedArray()))
+
+        val custom = EditText(this).apply {
+            hint = "自定义毫秒（负=提前，如 -350）"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+            setPadding(24, 24, 24, 16)
+        }
+        box.addView(custom)
+
         AlertDialog.Builder(this)
-            .setTitle("从 ${Fmt.duration(pos)} 开始校准")
-            .setMessage(
-                "歌词显示比演唱慢就选「提前」，快了就选「延后」。\n" +
-                    "只影响这首歌后面的部分，可多次叠加，永久保存。\n" +
-                    "「歌词整体微调」可以修「越到后面偏差越大」的速度问题。"
-            )
-            .setItems(options) { _, which ->
-                LyricStore.addSegment(track.bvid, pos, offsets[which])
-                LyricEngine.load(track, null)
-                Toast.makeText(this, "已校准，即刻生效", Toast.LENGTH_SHORT).show()
+            .setTitle("校准歌词 · 从 ${Fmt.duration(pos)} 起")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("应用自定义值") { _, _ ->
+                val ms = custom.text.toString().trim().toLongOrNull()
+                if (ms == null || ms == 0L) {
+                    Toast.makeText(this, "请输入非零毫秒数", Toast.LENGTH_SHORT).show()
+                } else applyOffset(ms)
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton("完成", null)
             .show()
     }
 
     /**
-     * 歌词整体微调：两个滑杆精确调整 ——
-     * 偏移（±5 秒，步长 0.05 秒）+ 速度倍率（±10%，步长 0.1%），
-     * 修「越到后面歌词偏得越多」的速度类偏差。立即生效，永久保存。
+     * 歌词整体微调：两个滑杆（偏移精确到 0.01 秒 + 速度倍率 0.1%），
+     * 按「手机 / 车机」分别保存；修「越到后面偏差越大」的速度类问题。
      */
     private fun showFineTuneDialog(track: Track) {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(64, 40, 64, 8)
+            setPadding(56, 28, 56, 8)
         }
+        val radio = targetRadio()
+        container.addView(radio)
+        container.addView(TextView(this).apply {
+            text = "切换设备会显示该设备已保存的参数；应用只影响当前选中的设备。"
+            textSize = 11f
+            setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg_dim))
+            setPadding(0, 8, 0, 16)
+        })
+
         val tvOffset = TextView(this).apply { textSize = 13f }
         val sliderOffset = Slider(this).apply {
             valueFrom = -5000f
             valueTo = 5000f
-            stepSize = 50f
-            value = (LyricStore.getCalibOffset(track.bvid) / 50L * 50L)
-                .toFloat().coerceIn(-5000f, 5000f)
+            stepSize = 10f
         }
         val tvRate = TextView(this).apply { textSize = 13f }
         val sliderRate = Slider(this).apply {
             valueFrom = -100f
             valueTo = 100f
             stepSize = 1f
-            value = ((LyricStore.getCalibRate(track.bvid) - 1.0) * 1000.0)
-                .roundToInt().coerceIn(-100, 100).toFloat()
         }
 
         fun refreshLabels() {
             val off = sliderOffset.value.toLong()
             val rate = 1.0 + sliderRate.value / 1000.0
-            val offText = if (off == 0L) "0 秒" else String.format("%+.2f 秒", off / 1000.0)
-            tvOffset.text = "整体偏移：$offText（正=歌词延后显示，负=提前）"
+            tvOffset.text = "整体偏移：${String.format("%+.2f 秒", off / 1000.0)}（正=延后，负=提前）"
             tvRate.text = String.format("速度倍率：%.3f（越到后面越慢就调大于 1）", rate)
         }
-        refreshLabels()
+
+        fun loadTargetValues() {
+            val t = radio.selectedTarget()
+            sliderOffset.value = (LyricStore.getCalibOffset(track.bvid, t) / 10L * 10L)
+                .toFloat().coerceIn(-5000f, 5000f)
+            sliderRate.value = ((LyricStore.getCalibRate(track.bvid, t) - 1.0) * 1000.0)
+                .roundToInt().coerceIn(-100, 100).toFloat()
+            refreshLabels()
+        }
+
+        radio.setOnCheckedChangeListener { _, _ -> loadTargetValues() }
         sliderOffset.addOnChangeListener { _, _, _ -> refreshLabels() }
         sliderRate.addOnChangeListener { _, _, _ -> refreshLabels() }
+        loadTargetValues()
 
         container.addView(tvOffset)
         container.addView(sliderOffset)
+        container.addView(
+            tuneRow(
+                tuneButton("−100ms") { sliderOffset.value = (sliderOffset.value - 100f).coerceIn(-5000f, 5000f) },
+                tuneButton("−10ms") { sliderOffset.value = (sliderOffset.value - 10f).coerceIn(-5000f, 5000f) },
+                tuneButton("+10ms") { sliderOffset.value = (sliderOffset.value + 10f).coerceIn(-5000f, 5000f) },
+                tuneButton("+100ms") { sliderOffset.value = (sliderOffset.value + 100f).coerceIn(-5000f, 5000f) }
+            )
+        )
         container.addView(tvRate)
         container.addView(sliderRate)
 
-        AlertDialog.Builder(this)
-            .setTitle("歌词整体微调")
-            .setView(container)
-            .setPositiveButton("应用") { _, _ ->
+        fun apply(reset: Boolean) {
+            val t = radio.selectedTarget()
+            if (reset) {
+                LyricStore.setCalibration(track.bvid, 0L, 1.0, t)
+            } else {
                 LyricStore.setCalibration(
                     track.bvid,
                     sliderOffset.value.toLong(),
-                    1.0 + sliderRate.value / 1000.0
+                    1.0 + sliderRate.value / 1000.0,
+                    t
                 )
-                LyricEngine.load(track, null)
-                Toast.makeText(this, "已应用整体微调，即刻生效", Toast.LENGTH_SHORT).show()
             }
-            .setNeutralButton("重置") { _, _ ->
-                LyricStore.setCalibration(track.bvid, 0L, 1.0)
-                LyricEngine.load(track, null)
-                Toast.makeText(this, "已重置整体微调", Toast.LENGTH_SHORT).show()
-            }
+            LyricEngine.recalibrate(track.bvid)
+            val who = if (t == LyricTarget.CAR) "车机" else "手机"
+            Toast.makeText(
+                this,
+                if (reset) "已重置${who}的整体微调" else "已应用${who}的整体微调，即刻生效",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("歌词整体微调（手机 / 车机分开）")
+            .setView(ScrollView(this).apply { addView(container) })
+            .setPositiveButton("应用") { _, _ -> apply(false) }
+            .setNeutralButton("重置该设备") { _, _ -> apply(true) }
             .setNegativeButton("取消", null)
             .show()
     }
@@ -881,51 +1249,64 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    /** 手打歌词编辑器：支持带时间戳（[00:12.34] 或 00:12），也支持整段无时间戳按行均分 */
+    /** 手打歌词编辑器：保存后立即重新加载（清缓存），所见即所得 */
     private fun openLyricEditor(track: Track, prefill: String, sourceLabel: String) {
         val input = EditText(this).apply {
             setText(prefill)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             gravity = Gravity.TOP or Gravity.START
-            minHeight = (resources.displayMetrics.heightPixels * 0.4).toInt()
-            setPadding(56, 36, 56, 36)
+            minHeight = (resources.displayMetrics.heightPixels * 0.35).toInt()
+            setPadding(48, 28, 48, 28)
             setSelection(text.length)
         }
-        val container = FrameLayout(this).apply { addView(input) }
-        AlertDialog.Builder(this)
-            .setTitle("修改歌词（底稿：$sourceLabel）")
+        val container = FrameLayout(this).apply {
+            addView(input, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("编辑歌词（底稿：$sourceLabel）")
             .setMessage(
-                "每行一句。带时间戳（如 [00:12.34]歌词 或 00:12 歌词）会按该时间显示；\n" +
-                    "全部不带时间戳时按行数均分整首歌。\n" +
-                    "保存后永久生效，车机通知同步使用这份歌词。"
+                "每行一句。带时间戳（如 [00:12.34]歌词 或 00:12 歌词）按时间显示；\n" +
+                    "全不带时间戳时按行数均分整首歌。\n" +
+                    "点「保存并应用」后立刻生效并永久记住。"
             )
-            .setView(container)
-            .setPositiveButton("保存") { _, _ ->
+            .setView(ScrollView(this).apply { addView(container) })
+            .setPositiveButton("保存并应用", null)
+            .setNeutralButton("换底稿", null)
+            .setNegativeButton("取消", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val text = input.text.toString().trim()
                 if (text.isEmpty()) {
-                    Toast.makeText(this, "内容为空，未保存", Toast.LENGTH_SHORT).show()
-                } else {
-                    LyricStore.setCustomLrc(track.bvid, text, sourceLabel)
-                    LyricEngine.load(track, null)
-                    Toast.makeText(this, "已保存，当前正在使用这份歌词", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "内容为空，未保存（可继续编辑）", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
                 }
+                LyricStore.setCustomLrc(track.bvid, text, sourceLabel)
+                reloadLyrics(track)
+                Toast.makeText(this, "已保存并应用，当前正在使用这份歌词", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
             }
-            .setNeutralButton("换底稿") { _, _ ->
-                if (input.text.toString().isNotBlank() &&
-                    input.text.toString() != prefill
-                ) {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val changed = input.text.toString() != prefill
+                val go = {
+                    dialog.dismiss()
+                    showManualLyricDialog(track)
+                }
+                if (changed) {
                     AlertDialog.Builder(this)
                         .setTitle("放弃当前修改？")
                         .setMessage("换底稿会丢掉这次没保存的修改。")
-                        .setPositiveButton("换底稿") { _, _ -> showManualLyricDialog(track) }
+                        .setPositiveButton("换底稿") { _, _ -> go() }
                         .setNegativeButton("继续编辑", null)
                         .show()
-                } else {
-                    showManualLyricDialog(track)
-                }
+                } else go()
             }
-            .setNegativeButton("取消", null)
-            .show()
+        }
+        dialog.show()
     }
 
     /** 选择字幕轨作为歌词来源：B 站 AI 字幕本质是「语音转文字」，上传者开启后才可用 */
@@ -964,7 +1345,7 @@ class PlayerActivity : AppCompatActivity() {
                         d.dismiss()
                         val lan = lans[which]
                         LyricStore.setChosenSubtitle(track.bvid, lan)
-                        LyricEngine.load(track, null)
+                        reloadLyrics(track)
                         Toast.makeText(
                             this@PlayerActivity,
                             if (lan == null) "已恢复自动选择字幕" else "已指定字幕来源，重新加载中…",
