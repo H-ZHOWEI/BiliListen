@@ -8,7 +8,8 @@ import kotlin.math.abs
 
 /**
  * 歌词显示目标：手机的播放页/悬浮窗 与 车机通知/AVRCP 是两条独立时间轴。
- * 车机链路（蓝牙/投屏）通常比手机慢几百毫秒，两边必须能分别校准，互不影响。
+ * 车机链路（蓝牙/投屏）通常比手机慢几百毫秒，且慢的程度取决于车机本身，
+ * 所以车机校准是【全局】的（对所有歌曲生效）；手机校准是【按歌】保存的。
  */
 enum class LyricTarget { PHONE, CAR }
 
@@ -31,11 +32,14 @@ object LyricStore {
         val segments: List<Segment>? = null,
         /** 用户在「字幕/语音转文字」里指定使用的字幕语言轨（如 zh-CN / ai-zh） */
         val chosenSubtitle: String? = null,
-        /** 手机：整体校准偏移（毫秒，正=延后显示，负=提前显示） */
+        /** 手机：整体校准偏移（毫秒，正=延后显示，负=提前显示）——按歌保存 */
         val calibOffset: Long? = null,
-        /** 手机：整体校准速度倍率（>1 显示越来越慢，<1 越来越快） */
+        /** 手机：整体校准速度倍率（>1 显示越来越慢，<1 越来越快）——按歌保存 */
         val calibRate: Double? = null,
-        /** 车机：独立的一套校准 */
+        /**
+         * 车机：独立的一套校准。v1.17 起车机校准是全局的，这三个字段
+         * 只写在 [CAR_KEY] 这个保留条目里，普通歌曲条目不再使用（旧数据启动时迁移）。
+         */
         val carSegments: List<Segment>? = null,
         val carCalibOffset: Long? = null,
         val carCalibRate: Double? = null
@@ -59,6 +63,38 @@ object LyricStore {
             }
         }
         if (store == null) store = Store()
+        migrateGlobalCar()
+    }
+
+    /**
+     * v1.17 之前车机校准按歌保存；用户反馈所有车机普遍慢于手机，
+     * 车机校准改为全局。启动时把散落在各歌条目里的车机校准
+     * 合并成一份全局（优先取分段校准最多的那份），并清掉旧位置。
+     */
+    private fun migrateGlobalCar() {
+        val s = st()
+        var best: Entry? = null
+        var bestSegs = -1
+        var touched = false
+        for ((k, e) in s.entries) {
+            if (k == CAR_KEY) continue
+            val hasCar = e.carCalibOffset != null || e.carCalibRate != null || !e.carSegments.isNullOrEmpty()
+            if (!hasCar) continue
+            val segs = e.carSegments?.size ?: 0
+            if (best == null || segs > bestSegs) { best = e; bestSegs = segs }
+            s.entries[k] = e.copy(carCalibOffset = null, carCalibRate = null, carSegments = null)
+            touched = true
+        }
+        if (!touched) return
+        val global = s.entries[CAR_KEY]
+        val globalHasCar = global != null && (
+            global.carCalibOffset != null || global.carCalibRate != null ||
+                !global.carSegments.isNullOrEmpty()
+            )
+        if (global == null || !globalHasCar) {
+            best?.let { s.entries[CAR_KEY] = it }
+        }
+        save()
     }
 
     private fun ensure(): File {
@@ -81,6 +117,13 @@ object LyricStore {
     }
 
     private fun st(): Store = store ?: Store().also { store = it }
+
+    /** 车机校准的全局保留条目 key：所有歌曲共用同一份车机校准 */
+    private const val CAR_KEY = "@car_global@"
+
+    /** 取某个设备对应的存储条目：车机 → 全局条目，手机 → 按歌条目 */
+    private fun entryFor(bvid: String, target: LyricTarget): Entry =
+        entryOf(if (target == LyricTarget.CAR) CAR_KEY else bvid)
 
     private fun save() {
         val f = file ?: return
@@ -135,32 +178,32 @@ object LyricStore {
         update(bvid) { it.copy(chosenSubtitle = lan) }
     }
 
-    // ---------------- 整体校准（偏移 + 速度倍率，按设备分开） ----------------
+    // ---------------- 整体校准（偏移 + 速度倍率）：手机按歌，车机全局 ----------------
 
     fun getCalibOffset(bvid: String, target: LyricTarget = LyricTarget.PHONE): Long {
-        val e = entryOf(bvid)
+        val e = entryFor(bvid, target)
         return if (target == LyricTarget.CAR) e.carCalibOffset ?: 0L else e.calibOffset ?: 0L
     }
 
     fun getCalibRate(bvid: String, target: LyricTarget = LyricTarget.PHONE): Double {
-        val e = entryOf(bvid)
+        val e = entryFor(bvid, target)
         return if (target == LyricTarget.CAR) e.carCalibRate ?: 1.0 else e.calibRate ?: 1.0
     }
 
     fun getSegments(bvid: String, target: LyricTarget = LyricTarget.PHONE): List<Segment> {
-        val e = entryOf(bvid)
+        val e = entryFor(bvid, target)
         return if (target == LyricTarget.CAR) e.carSegments.orEmpty() else e.segments.orEmpty()
     }
 
     fun hasCalibration(bvid: String, target: LyricTarget = LyricTarget.PHONE): Boolean {
-        val e = entryOf(bvid)
+        val e = entryFor(bvid, target)
         val off = if (target == LyricTarget.CAR) e.carCalibOffset else e.calibOffset
         val rate = if (target == LyricTarget.CAR) e.carCalibRate else e.calibRate
         val segs = if (target == LyricTarget.CAR) e.carSegments else e.segments
         return off != null || rate != null || !segs.isNullOrEmpty()
     }
 
-    /** 保存整体校准；offset=0 且 rate≈1 时视为重置（只影响所选设备） */
+    /** 保存整体校准；offset=0 且 rate≈1 时视为重置（手机只影响这首歌，车机影响所有歌） */
     fun setCalibration(
         bvid: String,
         offsetMs: Long,
@@ -170,7 +213,7 @@ object LyricStore {
         val reset = offsetMs == 0L && abs(rate - 1.0) < 0.0001
         val off: Long? = if (reset) null else offsetMs
         val r: Double? = if (reset) null else rate
-        update(bvid) { e ->
+        update(if (target == LyricTarget.CAR) CAR_KEY else bvid) { e ->
             if (target == LyricTarget.CAR) e.copy(carCalibOffset = off, carCalibRate = r)
             else e.copy(calibOffset = off, calibRate = r)
         }
@@ -186,7 +229,7 @@ object LyricStore {
         setCalibration(bvid, getCalibOffset(bvid, target) + deltaMs, rate, target)
     }
 
-    // ---------------- 分段校准（按设备分开） ----------------
+    // ---------------- 分段校准：手机按歌，车机全局 ----------------
 
     /**
      * 在 startMs 处加一个校准点：之后（含当前句）的歌词整体平移 offsetMs（负数=提前）。
@@ -208,31 +251,35 @@ object LyricStore {
         } else {
             current + Segment(startMs, base + offsetMs)
         }.filter { it.offset != 0L }.sortedBy { it.start }
-        update(bvid) { e ->
+        update(if (target == LyricTarget.CAR) CAR_KEY else bvid) { e ->
             if (target == LyricTarget.CAR) e.copy(carSegments = merged.ifEmpty { null })
             else e.copy(segments = merged.ifEmpty { null })
         }
     }
 
     fun clearSegments(bvid: String, target: LyricTarget = LyricTarget.PHONE) {
-        update(bvid) { e ->
+        update(if (target == LyricTarget.CAR) CAR_KEY else bvid) { e ->
             if (target == LyricTarget.CAR) e.copy(carSegments = null) else e.copy(segments = null)
         }
     }
 
-    /** 重置这首歌的所有校准（手机 + 车机，整体 + 分段） */
+    /**
+     * 重置校准：手机只清这首歌的，车机是全局的、清了影响所有歌
+     * （调用方 UI 会提示这一点）。
+     */
     fun clearAllCalibration(bvid: String) {
         update(bvid) {
-            it.copy(
-                calibOffset = null, calibRate = null, segments = null,
-                carCalibOffset = null, carCalibRate = null, carSegments = null
-            )
+            it.copy(calibOffset = null, calibRate = null, segments = null)
+        }
+        update(CAR_KEY) {
+            it.copy(carCalibOffset = null, carCalibRate = null, carSegments = null)
         }
     }
 
     /**
      * 把校准应用到原始时间轴：整体缩放/偏移 → 分段平移。
-     * 手机和车机各调用一次，得到两条互不干扰的时间轴。
+     * 手机和车机各调用一次，得到两条互不干扰的时间轴
+     * （车机参数来自全局条目，对所有歌一样）。
      */
     fun applyCalibration(
         lines: List<LyricLine>,

@@ -663,8 +663,8 @@ class PlayerActivity : AppCompatActivity() {
         val hasCustom = !LyricStore.getCustomLrc(track.bvid).isNullOrBlank()
         val calibHint = buildString {
             if (LyricStore.hasCalibration(track.bvid, LyricTarget.PHONE)) append("手机已调 ")
-            if (LyricStore.hasCalibration(track.bvid, LyricTarget.CAR)) append("车机已调")
-        }.trim().ifBlank { "手机 / 车机分开调" }
+            if (LyricStore.hasCalibration(track.bvid, LyricTarget.CAR)) append("车机已调(全局)")
+        }.trim().ifBlank { "手机按歌调 · 车机全局调" }
 
         showGroupedMenu(
             "歌词工具箱",
@@ -944,7 +944,11 @@ class PlayerActivity : AppCompatActivity() {
                 9 -> {
                     LyricStore.clearAllCalibration(track.bvid)
                     LyricEngine.recalibrate(track.bvid)
-                    Toast.makeText(this, "已重置手机 + 车机的全部校准", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this,
+                        "已重置：本歌的手机校准 + 车机全局校准（车机对所有歌生效）",
+                        Toast.LENGTH_LONG
+                    ).show()
                     true
                 }
                 10 -> {
@@ -1016,16 +1020,16 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    /** 两个校准目标共用的选择器 */
+    /** 两个校准目标共用的选择器：手机按歌保存，车机全局（所有歌共用） */
     private fun targetRadio(): RadioGroup {
         val phone = RadioButton(this).apply {
-            text = "手机显示"
+            text = "手机显示（只这首）"
             id = View.generateViewId()
             isChecked = true
             setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg))
         }
         val car = RadioButton(this).apply {
-            text = "车机显示"
+            text = "车机显示（所有歌）"
             id = View.generateViewId()
             setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg))
         }
@@ -1076,7 +1080,7 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
         val nowIdx = LyricEngine.indexFor(target, pos)
-        val who = if (target == LyricTarget.CAR) "车机" else "手机"
+        val who = if (target == LyricTarget.CAR) "车机 · 所有歌生效" else "手机 · 只这首"
         val labels = lines.mapIndexed { i, l ->
             val mark = if (i == nowIdx) "▶ 现在显示 · " else "${i + 1}. "
             "$mark${Fmt.duration(l.timeMs)}  ${l.text}"
@@ -1104,7 +1108,7 @@ class PlayerActivity : AppCompatActivity() {
                     Toast.makeText(
                         this,
                         "已把「${chosen.text.take(14)}」对齐到 ${Fmt.duration(pos)}，" +
-                            "$who 歌词整体${if (delta > 0) "延后" else "提前"} " +
+                            "$who：整体${if (delta > 0) "延后" else "提前"} " +
                             "${String.format("%.2f", kotlin.math.abs(delta) / 1000.0)} 秒，继续播放试试",
                         Toast.LENGTH_LONG
                     ).show()
@@ -1128,7 +1132,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * 从当前播放位置开始校准：手机 / 车机分开保存，最小 0.05 秒，
+     * 从当前播放位置开始校准：手机按歌保存、车机全局保存，最小 0.05 秒，
      * 同一位置反复调整自动叠加（调 0.5 再调 0.1 = 0.6），并即时生效。
      */
     private fun showCalibrateDialog(track: Track) {
@@ -1145,8 +1149,8 @@ class PlayerActivity : AppCompatActivity() {
         val radio = targetRadio()
         box.addView(radio)
         box.addView(TextView(this).apply {
-            text = "车机歌词比手机慢 → 选「车机显示」再点「提前」。\n" +
-                "两套参数各自保存，调车机不会影响手机。\n" +
+            text = "车机歌词普遍比手机慢 → 选「车机显示（所有歌）」再点「提前」。\n" +
+                "手机只调这首歌；车机对所有歌通用（调一次全生效）。\n" +
                 "从 ${Fmt.duration(pos)} 起的歌词生效，可反复点叠加。"
             textSize = 12f
             setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg_dim))
@@ -1200,7 +1204,7 @@ class PlayerActivity : AppCompatActivity() {
 
     /**
      * 歌词整体微调：两个滑杆（偏移精确到 0.01 秒 + 速度倍率 0.1%），
-     * 按「手机 / 车机」分别保存；修「越到后面偏差越大」的速度类问题。
+     * 手机按歌保存、车机全局保存；修「越到后面偏差越大」的速度类问题。
      */
     private fun showFineTuneDialog(track: Track) {
         val container = LinearLayout(this).apply {
@@ -1210,7 +1214,7 @@ class PlayerActivity : AppCompatActivity() {
         val radio = targetRadio()
         container.addView(radio)
         container.addView(TextView(this).apply {
-            text = "切换设备会显示该设备已保存的参数；应用只影响当前选中的设备。"
+            text = "手机调的只对这首歌生效；车机调的对所有歌生效。\n切换设备会显示该设备已保存的参数；应用只影响当前选中的设备。"
             textSize = 11f
             setTextColor(ContextCompat.getColor(this@PlayerActivity, R.color.on_bg_dim))
             setPadding(0, 8, 0, 16)
@@ -1283,7 +1287,7 @@ class PlayerActivity : AppCompatActivity() {
                 )
             }
             LyricEngine.recalibrate(track.bvid)
-            val who = if (t == LyricTarget.CAR) "车机" else "手机"
+            val who = if (t == LyricTarget.CAR) "车机（所有歌生效）" else "手机（只这首）"
             Toast.makeText(
                 this,
                 if (reset) "已重置${who}的整体微调" else "已应用${who}的整体微调，即刻生效",
@@ -1292,7 +1296,7 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("歌词整体微调（手机 / 车机分开）")
+            .setTitle("歌词整体微调（手机按歌 · 车机全局）")
             .setView(ScrollView(this).apply { addView(container) })
             .setPositiveButton("应用") { _, _ -> apply(false) }
             .setNeutralButton("重置该设备") { _, _ -> apply(true) }
