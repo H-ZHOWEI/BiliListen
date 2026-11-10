@@ -481,6 +481,23 @@ object PlayerController {
 
     fun currentIndex(): Int = controller?.currentMediaItemIndex ?: 0
 
+    /**
+     * 从播放队列移除某首（播放列表长按）：
+     * 移除的是当前正在播的歌时，ExoPlayer 会自动跳到下一首继续播；
+     * 队列只剩这一首时整体清空停止。
+     */
+    fun removeAt(index: Int) {
+        val c = controller ?: return
+        if (index !in 0 until c.mediaItemCount) return
+        if (c.mediaItemCount == 1) {
+            stopAndClear()
+            return
+        }
+        c.removeMediaItem(index)
+        queue.value = queue.value.toMutableList().apply { if (index < size) removeAt(index) }
+        SessionStore.saveQueue(queue.value, c.currentMediaItemIndex)
+    }
+
     fun stopAndClear() {
         val c = controller ?: return
         c.stop()

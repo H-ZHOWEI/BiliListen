@@ -123,6 +123,8 @@ class MainActivity : AppCompatActivity() {
         }
         mini.miniPlay.setOnClickListener { PlayerController.toggle() }
         mini.miniNext.setOnClickListener { PlayerController.next() }
+        // 不用先进播放页也能看队列：迷你条上的列表图标，和播放页「列表」按钮同一个对话框
+        mini.miniQueue.setOnClickListener { showQueueDialog(this) }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {

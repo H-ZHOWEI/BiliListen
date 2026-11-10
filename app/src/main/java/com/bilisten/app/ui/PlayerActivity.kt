@@ -11,13 +11,10 @@ import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.BaseAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ListView
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
@@ -171,7 +168,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         binding.btnQuality.setOnClickListener { showQualityDialog() }
         binding.btnLyric.setOnClickListener { currentTrack?.let { showLyricTools(it) } }
-        binding.btnQueue.setOnClickListener { showQueueDialog() }
+        binding.btnQueue.setOnClickListener { showQueueDialog(this) }
         binding.btnSearchLyric.setOnClickListener { showLyricSearchDialog() }
 
         binding.seek.addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
@@ -541,79 +538,6 @@ class PlayerActivity : AppCompatActivity() {
             }
             .setNegativeButton("取消", null)
             .show()
-    }
-
-    /**
-     * 播放列表：展示当前队列，正在播放的一首用粉色高亮 + ▶ 标记，
-     * 对话框开着时切歌（自动下一首）高亮也会实时跟着走；点任意一首立即播放。
-     */
-    private fun showQueueDialog() {
-        val tracks = PlayerController.queue.value
-        if (tracks.isEmpty()) {
-            Toast.makeText(this, "当前没有播放队列", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val accent = ContextCompat.getColor(this, R.color.bili_pink)
-        val normal = ContextCompat.getColor(this, R.color.on_bg)
-        val dim = ContextCompat.getColor(this, R.color.on_bg_dim)
-        val hiBg = ContextCompat.getColor(this, R.color.surface_higher)
-
-        var curIdx = PlayerController.currentIndex().coerceIn(0, tracks.size - 1)
-        val list = ListView(this).apply { dividerHeight = 0 }
-        val adapter = object : BaseAdapter() {
-            override fun getCount() = tracks.size
-            override fun getItem(position: Int) = tracks[position]
-            override fun getItemId(position: Int) = position.toLong()
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val t = tracks[position]
-                val tv = (convertView as? TextView) ?: TextView(parent.context).apply {
-                    textSize = 14f
-                    maxLines = 2
-                    setLineSpacing(0f, 1.1f)
-                    setPadding(48, 30, 48, 30)
-                }
-                val isCur = position == curIdx
-                tv.text = buildString {
-                    append(if (isCur) "▶ " else "${position + 1}. ")
-                    append(t.title)
-                    if (t.artist.isNotBlank()) append("  ·  ${t.artist}")
-                }
-                tv.setTextColor(if (isCur) accent else normal)
-                tv.setBackgroundColor(if (isCur) hiBg else android.graphics.Color.TRANSPARENT)
-                // 当前歌加粗 + 粉色，已播过的歌用暗色
-                tv.paint.isFakeBoldText = isCur
-                if (!isCur && position < curIdx) tv.setTextColor(dim)
-                return tv
-            }
-        }
-        list.adapter = adapter
-
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("播放列表（${tracks.size} 首）")
-            .setView(list)
-            .setNegativeButton("关闭", null)
-            .create()
-
-        // 对话框开着时歌自动切换 → 实时刷新高亮并滚动到当前
-        val refreshJob = lifecycleScope.launch {
-            PlayerController.current.collect {
-                val idx = PlayerController.currentIndex()
-                if (idx in tracks.indices && idx != curIdx) {
-                    curIdx = idx
-                    adapter.notifyDataSetChanged()
-                    list.smoothScrollToPosition(idx)
-                }
-            }
-        }
-        list.setOnItemClickListener { _, _, position, _ ->
-            PlayerController.playAt(position)
-            curIdx = position
-            adapter.notifyDataSetChanged()
-            dialog.dismiss()
-        }
-        dialog.setOnDismissListener { refreshJob.cancel() }
-        dialog.show()
-        list.setSelection(curIdx)
     }
 
     private fun updateQualityLabel() {

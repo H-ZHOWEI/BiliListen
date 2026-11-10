@@ -257,56 +257,64 @@
             app:tint="@color/on_bg" />
     </LinearLayout>
 
-    <LinearLayout
+    <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
         android:layout_marginBottom="18dp"
-        android:gravity="center"
-        android:orientation="horizontal">
+        android:scrollbars="none"
+        android:overScrollMode="never">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_speed"
-            style="@style/Widget.BiliListen.TonalButton"
+        <LinearLayout
             android:layout_width="wrap_content"
-            android:layout_height="34dp"
-            android:minWidth="0dp"
-            android:paddingHorizontal="14dp"
-            android:text="1.0x"
-            android:textSize="12sp" />
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:gravity="center"
+            android:orientation="horizontal">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_quality"
-            style="@style/Widget.BiliListen.TonalButton"
-            android:layout_width="wrap_content"
-            android:layout_height="34dp"
-            android:layout_marginStart="10dp"
-            android:minWidth="0dp"
-            android:paddingHorizontal="14dp"
-            android:text="音质 自动"
-            android:textSize="12sp" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_speed"
+                style="@style/Widget.BiliListen.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="14dp"
+                android:text="1.0x"
+                android:textSize="12sp" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_lyric"
-            style="@style/Widget.BiliListen.TonalButton"
-            android:layout_width="wrap_content"
-            android:layout_height="34dp"
-            android:layout_marginStart="10dp"
-            android:minWidth="0dp"
-            android:paddingHorizontal="14dp"
-            android:text="歌词"
-            android:textSize="12sp" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_quality"
+                style="@style/Widget.BiliListen.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="10dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="14dp"
+                android:text="音质 自动"
+                android:textSize="12sp" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_queue"
-            style="@style/Widget.BiliListen.TonalButton"
-            android:layout_width="wrap_content"
-            android:layout_height="34dp"
-            android:layout_marginStart="10dp"
-            android:minWidth="0dp"
-            android:paddingHorizontal="14dp"
-            android:text="列表"
-            android:textSize="12sp" />
-    </LinearLayout>
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_lyric"
+                style="@style/Widget.BiliListen.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="10dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="14dp"
+                android:text="歌词"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_queue"
+                style="@style/Widget.BiliListen.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="10dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="14dp"
+                android:text="列表"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </HorizontalScrollView>
 
 </LinearLayout>
