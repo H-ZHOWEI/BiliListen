@@ -1,9 +1,12 @@
 package com.bilisten.app.player
 
+import com.bilisten.app.data.LyricAutoAlign
 import com.bilisten.app.data.LyricLine
+import com.bilisten.app.data.LyricResult
 import com.bilisten.app.data.LyricStore
 import com.bilisten.app.data.LyricTarget
 import com.bilisten.app.data.LyricsRepository
+import com.bilisten.app.data.Prefs
 import com.bilisten.app.data.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,12 +35,15 @@ object LyricEngine {
         val bvid: String,
         val lines: List<LyricLine>,
         val source: String,
-        val empty: Boolean
+        val empty: Boolean,
+        /** 非空 = 刚完成一次自动对齐，播放页用 Toast 提醒用户 */
+        val autoAlignNote: String = ""
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var ticker: Job? = null
     private var loadJob: Job? = null
+    private var alignJob: Job? = null
     private var currentBvid = ""
 
     /** 未经校准的原始歌词（来源歌词 / 手打 / 指定版本） */
@@ -109,6 +115,40 @@ object LyricEngine {
             _events.tryEmit(
                 Snapshot(target, lines.value, result.source, result.lines.isEmpty())
             )
+            maybeAutoAlign(track, result)
+        }
+    }
+
+    /**
+     * 自动对齐（v1.18）：歌词不是 B 站字幕本身时，后台拿 B 站字幕做文本匹配，
+     * 匹配够了就生成逐句时间锚点并立即重算 —— 用户无感，歌词自动贴上这首歌。
+     * 同一来源只算一次（按 autoAnchorKey 缓存），换版本 / 换字幕轨会重新对齐。
+     */
+    private fun maybeAutoAlign(track: Track, result: LyricResult) {
+        alignJob?.cancel()
+        if (!Prefs.lyricAutoAlign) return
+        val bvid = track.bvid
+        if (result.lines.isEmpty()) return
+        val key = result.source
+        if (key.isBlank()) return
+        if (LyricStore.getAutoAnchorKey(bvid) == key &&
+            LyricStore.getAutoAnchors(bvid).isNotEmpty()
+        ) return
+        alignJob = scope.launch {
+            try {
+                val outcome = LyricAutoAlign.compute(track, result.lines, key)
+                    ?: return@launch
+                if (currentBvid != bvid) return@launch
+                LyricStore.setAutoAnchors(bvid, outcome.anchors, key)
+                recalibrate(bvid)
+                val note = if (outcome.viaSubtitle) {
+                    "已按 B 站字幕自动对齐歌词（匹配 ${outcome.matched} 处）"
+                } else {
+                    "已按歌曲时长自动校正歌词速度"
+                }
+                _events.tryEmit(Snapshot(bvid, lines.value, source.value, false, note))
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -127,6 +167,31 @@ object LyricEngine {
     /** 指定设备此刻正显示到第几句（-1 = 还没开始） */
     fun indexFor(target: LyricTarget, posMs: Long = PlayerController.positionMs.value): Int =
         indexAt(linesFor(target), posMs)
+
+    /** 「当前歌词应该在哪」用：校准后列表的下标 → 原始歌词的下标（先按下标、文本不符再按文本找） */
+    fun rawIndexOf(target: LyricTarget, index: Int): Int {
+        val ls = linesFor(target)
+        if (index < 0 || index >= ls.size) return -1
+        val raw = rawLines.value
+        if (raw.isEmpty()) return -1
+        if (index < raw.size && raw[index].text == ls[index].text) return index
+        val t = ls[index].timeMs
+        var best = -1
+        var bestD = Long.MAX_VALUE
+        raw.forEachIndexed { i, r ->
+            if (r.text == ls[index].text) {
+                val d = Math.abs(r.timeMs - t)
+                if (d < bestD) {
+                    bestD = d
+                    best = i
+                }
+            }
+        }
+        return best
+    }
+
+    /** 原始歌词（未校准）里第 index 句的时间；「当前歌词应该在哪」写锚点用 */
+    fun rawTimeAt(index: Int): Long = rawLines.value.getOrNull(index)?.timeMs ?: -1L
 
     private fun compute(
         pos: Long,

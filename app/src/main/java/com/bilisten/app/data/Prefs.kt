@@ -63,6 +63,11 @@ object Prefs {
         get() = sp.getBoolean("lyric_overlay_dual", false)
         set(value) = sp.edit().putBoolean("lyric_overlay_dual", value).apply()
 
+    /** 歌词自动对齐：用 B 站字幕把其它版本的歌词自动校到这首歌的时间轴上 */
+    var lyricAutoAlign: Boolean
+        get() = sp.getBoolean("lyric_auto_align", true)
+        set(value) = sp.edit().putBoolean("lyric_auto_align", value).apply()
+
     /**
      * 播放页（歌曲详情）屏幕常亮：
      * 0=不息屏一直亮（默认） 1=5分钟 2=10分钟 3=30分钟 4=跟随系统

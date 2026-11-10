@@ -260,6 +260,13 @@ class PlayerActivity : AppCompatActivity() {
                 launch {
                     LyricEngine.events.collect { snap ->
                         if (snap.bvid != loadedBvid) return@collect
+                        if (snap.autoAlignNote.isNotBlank()) {
+                            Toast.makeText(
+                                this@PlayerActivity,
+                                snap.autoAlignNote,
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                         if (snap.empty) {
                             binding.lyricEmpty.visibility = View.VISIBLE
                             binding.tvLyricTip.text =
@@ -664,6 +671,8 @@ class PlayerActivity : AppCompatActivity() {
         val calibHint = buildString {
             if (LyricStore.hasCalibration(track.bvid, LyricTarget.PHONE)) append("手机已调 ")
             if (LyricStore.hasCalibration(track.bvid, LyricTarget.CAR)) append("车机已调(全局)")
+            val n = LyricStore.mergedAnchors(track.bvid).size
+            if (n > 0) append(" · 对齐锚点${n}处")
         }.trim().ifBlank { "手机按歌调 · 车机全局调" }
 
         showGroupedMenu(
@@ -692,6 +701,13 @@ class PlayerActivity : AppCompatActivity() {
                         MenuAction("当前歌词应该在哪？", "选此刻真正在唱的那一句") {
                             showAlignLyricDialog(track)
                         },
+                        MenuAction(
+                            "自动对齐（用B站字幕校准其它版本）",
+                            if (Prefs.lyricAutoAlign) {
+                                val n = LyricStore.getAutoAnchors(track.bvid).size
+                                if (n > 0) "已开启 · 匹配$n 处" else "已开启"
+                            } else "已关闭"
+                        ) { handleMenuAction(18, track) },
                         MenuAction("从这里开始校准", calibHint) { showCalibrateDialog(track) },
                         MenuAction("整体微调（偏移 + 速度）", "精确到 0.01 秒") {
                             showFineTuneDialog(track)
@@ -994,6 +1010,27 @@ class PlayerActivity : AppCompatActivity() {
                     ).show()
                     true
                 }
+                18 -> {
+                    Prefs.lyricAutoAlign = !Prefs.lyricAutoAlign
+                    if (Prefs.lyricAutoAlign) {
+                        LyricsRepository.invalidate(track.bvid)
+                        LyricEngine.load(track, null)
+                        Toast.makeText(
+                            this,
+                            "已开启自动对齐：正在用 B 站字幕校准这首歌的歌词",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        // 只停用自动锚点；用户手动校的锚点保留
+                        LyricEngine.recalibrate(track.bvid)
+                        Toast.makeText(
+                            this,
+                            "已关闭自动对齐（你手动校准的点保留生效）",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    true
+                }
                 else -> false
             }
     }
@@ -1093,7 +1130,7 @@ class PlayerActivity : AppCompatActivity() {
                 val delta = pos - chosen.timeMs
                 if (kotlin.math.abs(delta) < 20L) {
                     Toast.makeText(this, "这句已经对齐当前时间，无需调整", Toast.LENGTH_SHORT).show()
-                } else {
+                } else if (target == LyricTarget.CAR) {
                     LyricStore.shiftCalibration(track.bvid, delta, target)
                     LyricEngine.recalibrate(track.bvid)
                     // 分段校准的生效边界会跟着时间轴移动，可能留一点残差，再补一次
@@ -1110,6 +1147,25 @@ class PlayerActivity : AppCompatActivity() {
                         "已把「${chosen.text.take(14)}」对齐到 ${Fmt.duration(pos)}，" +
                             "$who：整体${if (delta > 0) "延后" else "提前"} " +
                             "${String.format("%.2f", kotlin.math.abs(delta) / 1000.0)} 秒，继续播放试试",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    // 手机：写入时间锚点（src=原始歌词时间，dst=实际唱到的时间）。
+                    // 每次校准都永久记住，多个锚点之间逐段线性插值 —— 校得越多越准。
+                    val rawIdx = LyricEngine.rawIndexOf(target, which)
+                    val srcRaw = LyricEngine.rawTimeAt(rawIdx)
+                    if (srcRaw < 0) {
+                        LyricStore.shiftCalibration(track.bvid, delta, target)
+                        LyricEngine.recalibrate(track.bvid)
+                    } else {
+                        LyricStore.addManualAnchor(track.bvid, srcRaw, pos)
+                        LyricEngine.recalibrate(track.bvid)
+                    }
+                    val total = LyricStore.mergedAnchors(track.bvid).size
+                    Toast.makeText(
+                        this,
+                        "已把「${chosen.text.take(14)}」对齐到 ${Fmt.duration(pos)}，" +
+                            "校准点已记住（共 $total 处，校得越多越准），继续播放试试",
                         Toast.LENGTH_LONG
                     ).show()
                 }

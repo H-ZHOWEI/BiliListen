@@ -23,6 +23,13 @@ object LyricStore {
 
     data class Segment(val start: Long = 0, val offset: Long = 0)
 
+    /**
+     * 歌词时间锚点：这首「歌词版本」里的 [src] 毫秒处，实际对应这首歌的 [dst] 毫秒。
+     * 自动对齐（B站字幕匹配）和用户「当前歌词应该在哪」的每次纠正都会产生锚点；
+     * 锚点越多、分布越广，逐段线性插值出来的时间轴就越贴近真实演唱 —— 越听越准。
+     */
+    data class Anchor(val src: Long = 0, val dst: Long = 0)
+
     data class Entry(
         val customLrc: String? = null,
         val customSource: String? = null,
@@ -42,7 +49,13 @@ object LyricStore {
          */
         val carSegments: List<Segment>? = null,
         val carCalibOffset: Long? = null,
-        val carCalibRate: Double? = null
+        val carCalibRate: Double? = null,
+        /** 手机：手动锚点（用户「当前歌词应该在哪」每次选择都记一笔，按歌保存） */
+        val anchors: List<Anchor>? = null,
+        /** 手机：自动对齐锚点（B站字幕匹配产生，按歌保存） */
+        val autoAnchors: List<Anchor>? = null,
+        /** 自动锚点对应的歌词来源标识，换版本后需要重新对齐 */
+        val autoAnchorKey: String? = null
     )
 
     private data class Store(val entries: MutableMap<String, Entry> = LinkedHashMap())
@@ -229,6 +242,80 @@ object LyricStore {
         setCalibration(bvid, getCalibOffset(bvid, target) + deltaMs, rate, target)
     }
 
+    // ---------------- 时间锚点（越校越准的逐句映射，仅手机） ----------------
+
+    fun getAnchors(bvid: String): List<Anchor> = entryOf(bvid).anchors.orEmpty()
+
+    fun getAutoAnchors(bvid: String): List<Anchor> = entryOf(bvid).autoAnchors.orEmpty()
+
+    fun getAutoAnchorKey(bvid: String): String? = entryOf(bvid).autoAnchorKey
+
+    /** 「当前歌词应该在哪」每次选择都会成为永久锚点；3 秒内同位置自动覆盖 */
+    fun addManualAnchor(bvid: String, srcMs: Long, dstMs: Long) {
+        if (srcMs < 0 || dstMs < 0) return
+        update(bvid) { e ->
+            val rest = (e.anchors.orEmpty()).filter { abs(it.src - srcMs) >= 3000 }
+            e.copy(anchors = (rest + Anchor(srcMs, dstMs)).sortedBy { it.src }.ifEmpty { null })
+        }
+    }
+
+    /** 自动对齐结果写入（覆盖旧的自动锚点；手动锚点不动） */
+    fun setAutoAnchors(bvid: String, anchors: List<Anchor>, key: String) {
+        update(bvid) { e ->
+            e.copy(autoAnchors = anchors.sortedBy { it.src }.ifEmpty { null }, autoAnchorKey = key)
+        }
+    }
+
+    fun clearAnchors(bvid: String) {
+        update(bvid) { e -> e.copy(anchors = null, autoAnchors = null, autoAnchorKey = null) }
+    }
+
+    /** 合并自动 + 手动锚点：手动优先（同位置 3 秒内覆盖自动的）；关掉自动对齐时只用手的 */
+    fun mergedAnchors(bvid: String): List<Anchor> {
+        val e = entryOf(bvid)
+        val manual = e.anchors.orEmpty()
+        val auto = if (Prefs.lyricAutoAlign) e.autoAnchors.orEmpty() else emptyList()
+        if (manual.isEmpty()) return auto
+        val rest = auto.filter { a -> manual.none { abs(it.src - a.src) < 3000 } }
+        return (rest + manual).sortedBy { it.src }
+    }
+
+    /**
+     * 锚点逐段线性插值：两点之间按比例映射，首尾之外按最近锚点的差值平移。
+     * 只有 1 个锚点时等价于整体平移（和旧的 shift 行为一致）；
+     * 锚点多了以后，每个区段用各自的局部差值 —— 修「前面准了后面又跑偏」。
+     */
+    fun applyAnchors(lines: List<LyricLine>, anchors: List<Anchor>): List<LyricLine> {
+        if (lines.isEmpty()) return lines
+        val pts = anchors.filter { it.dst >= 0 }.distinctBy { it.src / 1500 }.sortedBy { it.src }
+        if (pts.isEmpty()) return lines
+        val first = pts.first()
+        val last = pts.last()
+        val out = lines.map { l ->
+            val t = l.timeMs
+            val nt = when {
+                pts.size == 1 || t <= first.src -> t + (first.dst - first.src)
+                t >= last.src -> t + (last.dst - last.src)
+                else -> {
+                    var i = 0
+                    while (i < pts.size - 2 && pts[i + 1].src < t) i++
+                    val a = pts[i]
+                    val b = pts[i + 1]
+                    if (b.src - a.src < 50) b.dst
+                    else {
+                        val ratio = (t - a.src).toDouble() / (b.src - a.src).toDouble()
+                        (a.dst + ratio * (b.dst - a.dst)).toLong().coerceAtLeast(0)
+                    }
+                }
+            }.coerceAtLeast(0)
+            if (nt == t) l else LyricLine(nt, l.text)
+        }
+        // 锚点异常时插值可能产生乱序，保险重排
+        return if (out.zipWithNext().any { it.first.timeMs > it.second.timeMs }) {
+            out.sortedBy { it.timeMs }
+        } else out
+    }
+
     // ---------------- 分段校准：手机按歌，车机全局 ----------------
 
     /**
@@ -269,7 +356,10 @@ object LyricStore {
      */
     fun clearAllCalibration(bvid: String) {
         update(bvid) {
-            it.copy(calibOffset = null, calibRate = null, segments = null)
+            it.copy(
+                calibOffset = null, calibRate = null, segments = null,
+                anchors = null, autoAnchors = null, autoAnchorKey = null
+            )
         }
         update(CAR_KEY) {
             it.copy(carCalibOffset = null, carCalibRate = null, carSegments = null)
@@ -297,6 +387,11 @@ object LyricStore {
         } else lines
         val segs = getSegments(bvid, target)
         if (segs.isNotEmpty()) out = applySegments(out, segs)
+        // 手机：最后套时间锚点（自动对齐 + 用户逐句纠正），听越多越准
+        if (target == LyricTarget.PHONE) {
+            val pts = mergedAnchors(bvid)
+            if (pts.isNotEmpty()) out = applyAnchors(out, pts)
+        }
         return out
     }
 
