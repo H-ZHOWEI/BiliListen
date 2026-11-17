@@ -86,10 +86,17 @@ class PlaylistDetailFragment : Fragment() {
                 (activity as? MainActivity)?.startPlayback(tracks, start, true)
             }
         }
+        // 「回到当前」：把正在播放的那首滚到屏幕中间
+        binding.btnLocate.setOnClickListener { locateCurrent() }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch { PlayerController.current.collect { adapter.setPlaying(it?.bvid) } }
+                launch {
+                    PlayerController.current.collect {
+                        adapter.setPlaying(it?.bvid)
+                        syncPlayingLocate(autoScroll = true)
+                    }
+                }
                 launch { Downloads.states.collect { adapter.setDownloads(it) } }
                 // 标出已点「我喜欢」的歌
                 launch { PlaylistStore.changed.collect { adapter.setFavs(PlaylistStore.likedBvids()) } }
@@ -103,6 +110,31 @@ class PlaylistDetailFragment : Fragment() {
         }
 
         refresh()
+    }
+
+    /**
+     * 正在播放的歌在本歌单里时显示「回到当前」按钮；
+     * 自动切歌时目标行不在屏幕可见范围内才滚动（可见就只高亮，不打扰浏览）。
+     */
+    private fun syncPlayingLocate(autoScroll: Boolean) {
+        if (_binding == null) return
+        val cur = PlayerController.current.value?.bvid
+        val idx = tracks.indexOfFirst { it.bvid == cur }
+        binding.btnLocate.visibility = if (idx >= 0) View.VISIBLE else View.GONE
+        if (idx >= 0 && autoScroll && !binding.rv.isVisibleInList(idx)) {
+            binding.rv.centerOnPosition(idx)
+        }
+    }
+
+    private fun locateCurrent() {
+        val ctx = context ?: return
+        val cur = PlayerController.current.value?.bvid
+        val idx = tracks.indexOfFirst { it.bvid == cur }
+        if (idx < 0) {
+            Toast.makeText(ctx, "正在播放的歌不在这个歌单里", Toast.LENGTH_SHORT).show()
+            return
+        }
+        binding.rv.centerOnPosition(idx)
     }
 
     private fun showTrackMenu(track: Track) {
@@ -131,6 +163,8 @@ class PlaylistDetailFragment : Fragment() {
         binding.emptyText.text =
             if (playlistId == PlaylistStore.FAV_ID) "还没有喜欢的歌\n播放页右上角点 ❤ 即可收藏"
             else "歌单还是空的：到收藏夹长按歌曲「加入我的歌单」"
+        // 进页面/刷新后：如果正在播的歌在这个歌单里，直接定位到它
+        binding.rv.post { syncPlayingLocate(autoScroll = true) }
     }
 
     override fun onDestroyView() {

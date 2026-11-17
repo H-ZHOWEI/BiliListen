@@ -76,6 +76,23 @@
             app:iconPadding="6dp"
             app:iconSize="16dp"
             app:iconTint="@color/on_bg" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_locate"
+            style="@style/Widget.BiliListen.TonalButton"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:text="回到当前"
+            android:textSize="13sp"
+            android:visibility="gone"
+            app:icon="@drawable/ic_locate"
+            app:iconGravity="textStart"
+            app:iconPadding="6dp"
+            app:iconSize="16dp"
+            app:iconTint="@color/bili_pink" />
     </LinearLayout>
 
     <androidx.swiperefreshlayout.widget.SwipeRefreshLayout

@@ -78,11 +78,18 @@ class TrackFragment : Fragment(), MainActivity.Reloadable {
             val start = tracks.indices.random()
             (activity as? MainActivity)?.startPlayback(tracks, start, true)
         }
+        // 「回到当前」：把正在播放的那首滚到屏幕中间
+        binding.btnLocate.setOnClickListener { locateCurrent() }
 
         // 高亮正在播放的那一首
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch { PlayerController.current.collect { track -> adapter.setPlaying(track?.bvid) } }
+                launch {
+                    PlayerController.current.collect { track ->
+                        adapter.setPlaying(track?.bvid)
+                        syncPlayingLocate(autoScroll = true)
+                    }
+                }
                 launch { Downloads.states.collect { adapter.setDownloads(it) } }
                 // 标出已点「我喜欢」的歌（歌单变动时自动刷新）
                 launch { PlaylistStore.changed.collect { adapter.setFavs(PlaylistStore.likedBvids()) } }
@@ -90,6 +97,30 @@ class TrackFragment : Fragment(), MainActivity.Reloadable {
         }
 
         load()
+    }
+
+    /**
+     * 正在播放的歌就在本列表里时：显示「回到当前」按钮；
+     * 自动切歌时如果目标行不在屏幕可见范围内，把它滚到屏幕中间（在可见范围内就不打扰滚动位置）。
+     */
+    private fun syncPlayingLocate(autoScroll: Boolean) {
+        if (_binding == null) return
+        val cur = PlayerController.current.value?.bvid
+        val idx = tracks.indexOfFirst { it.bvid == cur }
+        binding.btnLocate.visibility = if (idx >= 0) View.VISIBLE else View.GONE
+        if (idx >= 0 && autoScroll && !binding.rv.isVisibleInList(idx)) {
+            binding.rv.centerOnPosition(idx)
+        }
+    }
+
+    private fun locateCurrent() {
+        val cur = PlayerController.current.value?.bvid
+        val idx = tracks.indexOfFirst { it.bvid == cur }
+        if (idx < 0) {
+            Toast.makeText(requireContext(), "正在播放的歌不在这个列表里", Toast.LENGTH_SHORT).show()
+            return
+        }
+        binding.rv.centerOnPosition(idx)
     }
 
     private fun startDownload(track: Track) {
@@ -323,6 +354,8 @@ class TrackFragment : Fragment(), MainActivity.Reloadable {
                 }
                 binding.empty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
                 binding.emptyText.text = getString(R.string.empty_tracks)
+                // 进页面/刷新后：如果正在播的歌在本收藏夹里，直接定位到它
+                binding.rv.post { syncPlayingLocate(autoScroll = true) }
             } catch (e: Exception) {
                 binding.empty.visibility = View.VISIBLE
                 binding.emptyText.text = "加载失败：${e.message}\n下拉可重试"
