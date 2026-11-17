@@ -246,7 +246,9 @@ class PlayerActivity : AppCompatActivity() {
                         lyricAdapter.setCurrent(idx)
                         if (idx >= 0) {
                             val lm = binding.rvLyrics.layoutManager as LinearLayoutManager
-                            val offset = binding.rvLyrics.height / 2 - 40
+                            // 当前歌词固定在「屏幕偏上」位置（约 1/3 处），
+                            // 之前是高度一半，视觉上落在屏幕中偏下，观感不好
+                            val offset = (binding.rvLyrics.height / 3f).toInt()
                             lm.scrollToPositionWithOffset(idx, offset.coerceAtLeast(0))
                         }
                     }

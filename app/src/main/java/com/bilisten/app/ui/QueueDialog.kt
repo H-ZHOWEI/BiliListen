@@ -63,11 +63,36 @@ fun showQueueDialog(activity: AppCompatActivity) {
     val dialog = AlertDialog.Builder(activity)
         .setTitle("播放列表（${tracks.size} 首）")
         .setView(list)
+        .setNeutralButton("回到当前", null)
         .setNegativeButton("关闭", null)
         .create()
 
     fun refreshTitle() {
         dialog.setTitle("播放列表（${tracks.size} 首）")
+    }
+
+    /** 把 position 滚到列表垂直居中：量出该行实际高度，再 setSelectionFromTop */
+    fun centerOn(position: Int) {
+        if (position !in 0 until adapter.count) return
+        list.post {
+            if (!list.isAttachedToWindow) return@post
+            val item = adapter.getView(position, null, list)
+            item.measure(
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            )
+            val offset = list.height / 2 - item.measuredHeight / 2
+            list.setSelectionFromTop(position, offset.coerceAtLeast(0))
+        }
+    }
+
+    // 「回到当前」按钮：不管用户滚到哪儿，一键把当前歌拉回屏幕中间
+    dialog.setOnShowListener {
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            curIdx = PlayerController.currentIndex().coerceIn(0, tracks.size - 1)
+            adapter.notifyDataSetChanged()
+            centerOn(curIdx)
+        }
     }
 
     val job = activity.lifecycleScope.launch {
@@ -83,7 +108,7 @@ fun showQueueDialog(activity: AppCompatActivity) {
                     curIdx = PlayerController.currentIndex().coerceIn(0, q.size - 1)
                     adapter.notifyDataSetChanged()
                     refreshTitle()
-                    list.setSelection(curIdx)
+                    centerOn(curIdx)
                 }
             }
         }
@@ -94,7 +119,7 @@ fun showQueueDialog(activity: AppCompatActivity) {
                 if (idx in tracks.indices && idx != curIdx) {
                     curIdx = idx
                     adapter.notifyDataSetChanged()
-                    list.smoothScrollToPosition(idx)
+                    centerOn(idx)
                 }
             }
         }
@@ -118,5 +143,5 @@ fun showQueueDialog(activity: AppCompatActivity) {
     }
     dialog.setOnDismissListener { job.cancel() }
     dialog.show()
-    list.setSelection(curIdx)
+    centerOn(curIdx)
 }
