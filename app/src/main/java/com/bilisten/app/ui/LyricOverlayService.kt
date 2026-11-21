@@ -135,18 +135,46 @@ class LyricOverlayService : Service() {
         // ---------------- 歌词快慢（参考 QQ 音乐悬浮歌词工具条） ----------------
         // 点 ⇆ 展开调节条：提前/延后 0.5 秒一步，立即生效，按歌记忆（与手机歌词共用 PHONE 校准）
         val speedBtn = v.findViewById<View>(R.id.lyric_speed)
+        val modeRow = v.findViewById<View>(R.id.lyric_mode_row)
+        val modeBtn = v.findViewById<TextView>(R.id.lyric_mode)
+        val modePos = v.findViewById<TextView>(R.id.lyric_mode_pos)
         val adjustRow = v.findViewById<View>(R.id.lyric_adjust_row)
         val tvOffset = v.findViewById<TextView>(R.id.lyric_offset)
+        val tvReset = v.findViewById<TextView>(R.id.lyric_reset)
+
+        // false=整首统一平移；true=从固定位置起分段平移（前半快、后半慢时用）
+        var segmentMode = false
+        var segmentStartMs = 0L
+
+        fun fmtShift(ms: Long): String = when {
+            ms > 0L -> "延后 ${ms / 1000.0} 秒"
+            ms < 0L -> "提前 ${-ms / 1000.0} 秒"
+            else -> "无偏移"
+        }
+
+        /** 当前分段位置实际吃到的累计偏移（含 3 秒前瞻，和 applySegments 一致） */
+        fun activeSegmentOffset(bvid: String): Long =
+            LyricStore.getSegments(bvid, LyricTarget.PHONE)
+                .filter { it.start <= segmentStartMs + 3000 }
+                .lastOrNull()?.offset ?: 0L
 
         fun refreshOffsetLabel() {
             val bvid = LyricEngine.currentBvid
-            val off = if (bvid.isNullOrBlank()) 0L
-            else LyricStore.getCalibOffset(bvid, LyricTarget.PHONE)
-            tvOffset.text = when {
-                off > 0L -> "延后 ${off / 1000.0} 秒"
-                off < 0L -> "提前 ${-off / 1000.0} 秒"
-                else -> "无偏移"
+            if (bvid.isNullOrBlank()) {
+                tvOffset.text = "无偏移"
+                return
             }
+            val off = if (segmentMode) activeSegmentOffset(bvid)
+            else LyricStore.getCalibOffset(bvid, LyricTarget.PHONE)
+            tvOffset.text = if (segmentMode) "本段 ${fmtShift(off)}" else fmtShift(off)
+        }
+
+        fun refreshModeUi() {
+            modeBtn.text = if (segmentMode) "范围：从这里起" else "范围：整首"
+            modePos.text = if (segmentMode) "从 ${com.bilisten.app.util.Fmt.duration(segmentStartMs)} 起 · 再点重取位置"
+            else "点一下改成「从当前位置起」"
+            tvReset.text = if (segmentMode) "清分段" else "还原"
+            refreshOffsetLabel()
         }
 
         fun shift(deltaMs: Long) {
@@ -155,7 +183,17 @@ class LyricOverlayService : Service() {
                 Toast.makeText(this, "当前没有正在播放的歌词可调", Toast.LENGTH_SHORT).show()
                 return
             }
-            LyricStore.shiftCalibration(bvid, deltaMs, LyricTarget.PHONE)
+            if (segmentMode) {
+                // 分段：只影响从这个位置往后的歌词，前面保持原样
+                LyricStore.addSegment(bvid, segmentStartMs, deltaMs, LyricTarget.PHONE)
+                Toast.makeText(
+                    this,
+                    "手机歌词从 ${com.bilisten.app.util.Fmt.duration(segmentStartMs)} 起${fmtShift(deltaMs)}（已生效）",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                LyricStore.shiftCalibration(bvid, deltaMs, LyricTarget.PHONE)
+            }
             // 只动校准：走 recalibrate 即时重算，不联网、不清锚点
             LyricEngine.recalibrate(bvid)
             refreshOffsetLabel()
@@ -167,15 +205,33 @@ class LyricOverlayService : Service() {
                 Toast.makeText(this, "当前没有正在播放的歌词", Toast.LENGTH_SHORT).show()
                 return
             }
-            val rate = LyricStore.getCalibRate(bvid, LyricTarget.PHONE)
-            LyricStore.setCalibration(bvid, 0L, rate, LyricTarget.PHONE)
+            if (segmentMode) {
+                LyricStore.clearSegments(bvid, LyricTarget.PHONE)
+                Toast.makeText(this, "已清除这首歌的全部分段校准（整体偏移保留）", Toast.LENGTH_SHORT).show()
+            } else {
+                val rate = LyricStore.getCalibRate(bvid, LyricTarget.PHONE)
+                LyricStore.setCalibration(bvid, 0L, rate, LyricTarget.PHONE)
+            }
             LyricEngine.recalibrate(bvid)
             refreshOffsetLabel()
         }
 
+        modeBtn.setOnClickListener {
+            segmentMode = !segmentMode
+            if (segmentMode) {
+                segmentStartMs = com.bilisten.app.player.PlayerController.positionMs.value
+                Toast.makeText(
+                    this,
+                    "已从 ${com.bilisten.app.util.Fmt.duration(segmentStartMs)} 起分段调整；调完这里，把进度拖到后面再点「范围」重取位置",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            refreshModeUi()
+        }
         speedBtn.setOnClickListener {
             val show = adjustRow.visibility != View.VISIBLE
-            if (show) refreshOffsetLabel()
+            if (show) refreshModeUi()
+            modeRow.visibility = if (show) View.VISIBLE else View.GONE
             adjustRow.visibility = if (show) View.VISIBLE else View.GONE
         }
         v.findViewById<View>(R.id.lyric_earlier).setOnClickListener { shift(-500L) }

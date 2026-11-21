@@ -79,6 +79,39 @@
             android:src="@drawable/ic_close" />
     </LinearLayout>
 
+    <!-- 调整范围：整首 / 从当前位置起（分段），随调节条一起展开 -->
+    <LinearLayout
+        android:id="@+id/lyric_mode_row"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="6dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/lyric_mode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_overlay_close"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp"
+            android:text="范围：整首"
+            android:textColor="@color/bili_pink"
+            android:textSize="11.5sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/lyric_mode_pos"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="8dp"
+            android:maxWidth="230dp"
+            android:text="点一下改成「从当前位置起」"
+            android:textColor="@color/on_bg_dim"
+            android:textSize="11sp" />
+    </LinearLayout>
+
     <!-- 快慢调节条：点上面的按钮展开/收起，立即生效 -->
     <LinearLayout
         android:id="@+id/lyric_adjust_row"

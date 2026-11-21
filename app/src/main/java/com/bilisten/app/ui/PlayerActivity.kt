@@ -674,6 +674,8 @@ class PlayerActivity : AppCompatActivity() {
         val calibHint = buildString {
             if (LyricStore.hasCalibration(track.bvid, LyricTarget.PHONE)) append("手机已调 ")
             if (LyricStore.hasCalibration(track.bvid, LyricTarget.CAR)) append("车机已调(全局)")
+            val segN = LyricStore.getSegments(track.bvid, LyricTarget.PHONE).size
+            if (segN > 0) append(" · 分段${segN}处")
             val n = LyricStore.mergedAnchors(track.bvid).size
             if (n > 0) append(" · 对齐锚点${n}处")
         }.trim().ifBlank { "手机按歌调 · 车机全局调" }

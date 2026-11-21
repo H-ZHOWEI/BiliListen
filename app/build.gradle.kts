@@ -10,8 +10,8 @@ android {
         applicationId = "com.bilisten.app"
         minSdk = 24
         targetSdk = 37
-        versionCode = 25
-        versionName = "1.23"
+        versionCode = 26
+        versionName = "1.24"
     }
 
     signingConfigs {
