@@ -3,60 +3,134 @@
     android:id="@+id/lyric_root"
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
-    android:orientation="horizontal"
+    android:orientation="vertical"
     android:background="@drawable/bg_lyric_overlay"
-    android:gravity="center_vertical"
     android:paddingHorizontal="14dp"
-    android:paddingVertical="9dp">
-
-    <ImageView
-        android:layout_width="16dp"
-        android:layout_height="16dp"
-        android:layout_marginEnd="8dp"
-        android:src="@drawable/ic_eq"
-        android:tint="@color/bili_pink"
-        android:contentDescription="拖动" />
+    android:paddingTop="9dp"
+    android:paddingBottom="9dp">
 
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
 
-        <TextView
-            android:id="@+id/lyric_text"
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:layout_marginEnd="8dp"
+            android:src="@drawable/ic_eq"
+            android:tint="@color/bili_pink"
+            android:contentDescription="拖动" />
+
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:maxWidth="280dp"
-            android:maxLines="2"
-            android:ellipsize="end"
-            android:textColor="@color/on_bg"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:text="歌词" />
+            android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/lyric_text_next"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:maxWidth="280dp"
-            android:maxLines="1"
-            android:ellipsize="end"
-            android:layout_marginTop="2dp"
-            android:textColor="@color/on_bg_dim"
-            android:textSize="11.5sp"
-            android:text="下一句"
-            android:visibility="gone" />
+            <TextView
+                android:id="@+id/lyric_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxWidth="280dp"
+                android:maxLines="2"
+                android:ellipsize="end"
+                android:textColor="@color/on_bg"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:text="歌词" />
+
+            <TextView
+                android:id="@+id/lyric_text_next"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxWidth="280dp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:layout_marginTop="2dp"
+                android:textColor="@color/on_bg_dim"
+                android:textSize="11.5sp"
+                android:text="下一句"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- 歌词快慢：参考 QQ 音乐悬浮歌词工具条，就地展开 ±0.5 秒调节 -->
+        <ImageView
+            android:id="@+id/lyric_speed"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_overlay_close"
+            android:contentDescription="调整歌词快慢"
+            android:padding="7dp"
+            android:alpha="0.66"
+            android:src="@drawable/ic_calib" />
+
+        <!-- 就地关闭：不用再回 App 里开关 -->
+        <ImageView
+            android:id="@+id/lyric_close"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/bg_overlay_close"
+            android:contentDescription="关闭悬浮歌词"
+            android:padding="7dp"
+            android:alpha="0.66"
+            android:src="@drawable/ic_close" />
     </LinearLayout>
 
-    <!-- 就地关闭：不用再回 App 里开关 -->
-    <ImageView
-        android:id="@+id/lyric_close"
-        android:layout_width="28dp"
-        android:layout_height="28dp"
-        android:layout_marginStart="8dp"
-        android:background="@drawable/bg_overlay_close"
-        android:contentDescription="关闭悬浮歌词"
-        android:padding="7dp"
-        android:alpha="0.66"
-        android:src="@drawable/ic_close" />
+    <!-- 快慢调节条：点上面的按钮展开/收起，立即生效 -->
+    <LinearLayout
+        android:id="@+id/lyric_adjust_row"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="6dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/lyric_earlier"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_overlay_close"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp"
+            android:text="提前 0.5s"
+            android:textColor="@color/on_bg"
+            android:textSize="11.5sp" />
+
+        <TextView
+            android:id="@+id/lyric_offset"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingHorizontal="10dp"
+            android:minWidth="72dp"
+            android:gravity="center"
+            android:text="无偏移"
+            android:textColor="@color/bili_pink"
+            android:textSize="11.5sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/lyric_later"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_overlay_close"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp"
+            android:text="延后 0.5s"
+            android:textColor="@color/on_bg"
+            android:textSize="11.5sp" />
+
+        <TextView
+            android:id="@+id/lyric_reset"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp"
+            android:text="还原"
+            android:textColor="@color/on_bg_dim"
+            android:textSize="11.5sp" />
+    </LinearLayout>
 </LinearLayout>

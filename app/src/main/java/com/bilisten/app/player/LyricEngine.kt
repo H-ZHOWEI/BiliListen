@@ -44,7 +44,9 @@ object LyricEngine {
     private var ticker: Job? = null
     private var loadJob: Job? = null
     private var alignJob: Job? = null
-    private var currentBvid = ""
+    /** 当前装载歌词的视频 bvid（对外只读，悬浮窗快慢调整用） */
+    var currentBvid = ""
+        private set
 
     /** 未经校准的原始歌词（来源歌词 / 手打 / 指定版本） */
     private val rawLines = MutableStateFlow<List<LyricLine>>(emptyList())

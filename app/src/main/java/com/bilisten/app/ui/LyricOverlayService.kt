@@ -14,6 +14,8 @@ import android.view.WindowManager
 import android.widget.TextView
 import android.widget.Toast
 import com.bilisten.app.R
+import com.bilisten.app.data.LyricStore
+import com.bilisten.app.data.LyricTarget
 import com.bilisten.app.data.Prefs
 import com.bilisten.app.player.LyricEngine
 import kotlinx.coroutines.CoroutineScope
@@ -129,6 +131,56 @@ class LyricOverlayService : Service() {
             removeOverlay()
             stopSelf()
         }
+
+        // ---------------- 歌词快慢（参考 QQ 音乐悬浮歌词工具条） ----------------
+        // 点 ⇆ 展开调节条：提前/延后 0.5 秒一步，立即生效，按歌记忆（与手机歌词共用 PHONE 校准）
+        val speedBtn = v.findViewById<View>(R.id.lyric_speed)
+        val adjustRow = v.findViewById<View>(R.id.lyric_adjust_row)
+        val tvOffset = v.findViewById<TextView>(R.id.lyric_offset)
+
+        fun refreshOffsetLabel() {
+            val bvid = LyricEngine.currentBvid
+            val off = if (bvid.isNullOrBlank()) 0L
+            else LyricStore.getCalibOffset(bvid, LyricTarget.PHONE)
+            tvOffset.text = when {
+                off > 0L -> "延后 ${off / 1000.0} 秒"
+                off < 0L -> "提前 ${-off / 1000.0} 秒"
+                else -> "无偏移"
+            }
+        }
+
+        fun shift(deltaMs: Long) {
+            val bvid = LyricEngine.currentBvid
+            if (bvid.isNullOrBlank() || LyricEngine.lines.value.isEmpty()) {
+                Toast.makeText(this, "当前没有正在播放的歌词可调", Toast.LENGTH_SHORT).show()
+                return
+            }
+            LyricStore.shiftCalibration(bvid, deltaMs, LyricTarget.PHONE)
+            // 只动校准：走 recalibrate 即时重算，不联网、不清锚点
+            LyricEngine.recalibrate(bvid)
+            refreshOffsetLabel()
+        }
+
+        fun reset() {
+            val bvid = LyricEngine.currentBvid
+            if (bvid.isNullOrBlank()) {
+                Toast.makeText(this, "当前没有正在播放的歌词", Toast.LENGTH_SHORT).show()
+                return
+            }
+            val rate = LyricStore.getCalibRate(bvid, LyricTarget.PHONE)
+            LyricStore.setCalibration(bvid, 0L, rate, LyricTarget.PHONE)
+            LyricEngine.recalibrate(bvid)
+            refreshOffsetLabel()
+        }
+
+        speedBtn.setOnClickListener {
+            val show = adjustRow.visibility != View.VISIBLE
+            if (show) refreshOffsetLabel()
+            adjustRow.visibility = if (show) View.VISIBLE else View.GONE
+        }
+        v.findViewById<View>(R.id.lyric_earlier).setOnClickListener { shift(-500L) }
+        v.findViewById<View>(R.id.lyric_later).setOnClickListener { shift(500L) }
+        v.findViewById<View>(R.id.lyric_reset).setOnClickListener { reset() }
 
         wm.addView(v, params)
         view = v
